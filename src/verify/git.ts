@@ -1,9 +1,14 @@
 import { spawnSync } from "node:child_process"
+import { isAbsolute, resolve } from "node:path"
 
 import type { GitPort } from "./types.js"
 
 export class RealGitPort implements GitPort {
   constructor(private readonly root: string) {}
+
+  private cwd(path: string): string {
+    return isAbsolute(path) ? path : resolve(this.root, path)
+  }
 
   available(): boolean {
     const result = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -15,7 +20,7 @@ export class RealGitPort implements GitPort {
 
   head(cwd: string): string {
     const result = spawnSync("git", ["rev-parse", "HEAD"], {
-      cwd,
+      cwd: this.cwd(cwd),
       encoding: "utf8",
     })
     return result.status === 0 ? result.stdout.trim() : ""
@@ -26,7 +31,7 @@ export class RealGitPort implements GitPort {
       return []
     }
     const result = spawnSync("git", ["log", "--reverse", "--format=%H", `${base}..HEAD`], {
-      cwd,
+      cwd: this.cwd(cwd),
       encoding: "utf8",
     })
     if (result.status !== 0) {
@@ -40,7 +45,7 @@ export class RealGitPort implements GitPort {
 
   cherryPick(commits: string[], cwd: string): void {
     const result = spawnSync("git", ["cherry-pick", ...commits], {
-      cwd,
+      cwd: this.cwd(cwd),
       encoding: "utf8",
     })
     if (result.status !== 0) {
@@ -49,7 +54,7 @@ export class RealGitPort implements GitPort {
   }
 
   revertCherryPick(cwd: string): void {
-    spawnSync("git", ["cherry-pick", "--abort"], { cwd, encoding: "utf8" })
+    spawnSync("git", ["cherry-pick", "--abort"], { cwd: this.cwd(cwd), encoding: "utf8" })
   }
 }
 

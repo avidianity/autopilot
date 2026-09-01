@@ -152,7 +152,7 @@ describe("Worker lifecycle", () => {
       sessionId,
     })
     expect(runner.aborted).toEqual([sessionId])
-    expect(store.getWorkItem(item.id)?.status).toBe("unknown")
+    expect(store.getWorkItem(item.id)?.status).toBe("repairing")
   })
 
   test("recovers launch identities from session titles after restart", async () => {
@@ -216,6 +216,68 @@ describe("Worker lifecycle", () => {
       sessionId: runner.created[0]?.id ?? "",
       kind: "error",
     })
-    expect(store.getWorkItem(item.id)?.status).toBe("unknown")
+    expect(store.getWorkItem(item.id)?.status).toBe("repairing")
+  })
+
+  test("unknown Work Items with retries remaining become repairing", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "error",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("repairing")
+    expect((store.getWorkItem(item.id)?.failedAttempts ?? 0) > 0).toBe(true)
+  })
+
+  test("unknown Work Items become stuck after maxRetries", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    store.mutate(run.id, lease.fencingToken, (tx) => {
+      tx.incrementFailedAttempts(item.id, 2)
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "error",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("stuck")
+  })
+
+  test("Worker worktrees start from the Run Branch worktree", async () => {
+    const { store, run, lease, worktrees, lifecycle } = setup()
+    readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    const startPoint = `/repo/.autopilot/runs/${run.id}`
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      canonicalRoot: "/repo",
+      startPoint,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    expect(worktrees.reserved[0]?.startPoint).toBe(startPoint)
+    expect(worktrees.reserved[0]?.path.startsWith("/")).toBe(true)
   })
 })

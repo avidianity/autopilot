@@ -2,13 +2,13 @@ import { StaleLeaseError, type AutopilotStore } from "./core/store.js"
 import { buildCapabilitySnapshot } from "./planning/capabilities.js"
 import { compileWorkerInstruction } from "./planning/compiler.js"
 import { discoverEvidence } from "./planning/discover.js"
-import { applyPlanFromEngine } from "./planning/planner.js"
+import { applyPlanFromEngine, unblockReadyWorkItems } from "./planning/planner.js"
 import type { Capability, SemanticEngine } from "./planning/types.js"
 import { DirectObjectiveSource, WorkSourceRegistry } from "./planning/sources.js"
 import type { WorkSourceAdapter } from "./planning/types.js"
 import { VerificationCatalog, VerificationEngine, createDefaultPlan } from "./verify/engine.js"
 import type { GitPort, ProcessPort } from "./verify/types.js"
-import { WorkerLifecycle, type WorktreePort } from "./workers/lifecycle.js"
+import { resolveUnderRoot, WorkerLifecycle, type WorktreePort } from "./workers/lifecycle.js"
 import type { SessionRunner } from "./workers/session-runner.js"
 
 export interface SupervisorDeps {
@@ -91,7 +91,7 @@ export class Supervisor {
     if (existing) {
       this.runId = existing.id
       this.pollMs = existing.pollIntervalMs
-      const lease = this.deps.store.acquireLease(existing.id, this.instanceId, 60_000)
+      const lease = this.deps.store.acquireLease(existing.id, this.instanceId, this.leaseTtlMs)
       this.fencingToken = lease.fencingToken
       this.applyRecoveryHold(existing)
       this.ensureLoop()
@@ -103,7 +103,7 @@ export class Supervisor {
       autoResumeAfterRestart: this.deps.autoResumeAfterRestart ?? false,
       ...(this.deps.pollIntervalMs === undefined ? {} : { pollIntervalMs: this.deps.pollIntervalMs }),
     })
-    const lease = this.deps.store.acquireLease(run.id, this.instanceId, 60_000)
+    const lease = this.deps.store.acquireLease(run.id, this.instanceId, this.leaseTtlMs)
     this.runId = run.id
     this.fencingToken = lease.fencingToken
     this.pollMs = run.pollIntervalMs
@@ -229,6 +229,11 @@ export class Supervisor {
       return
     }
     await this.lifecycle.recover({ runId: run.id, fencingToken: this.fencingToken })
+    for (const item of this.deps.store.snapshot(run.id).workItems) {
+      if (item.status === "unknown") {
+        this.lifecycle.leaveUnknown(run.id, this.fencingToken, item.id)
+      }
+    }
     const evidence = await discoverEvidence({
       objective: current.objective,
       engine: this.deps.engine,
@@ -248,14 +253,17 @@ export class Supervisor {
       })),
     })
     const next = this.deps.store.snapshot(run.id)
-    const integrationPath = `.autopilot/runs/${run.id}`
+    const integrationPath = resolveUnderRoot(this.deps.canonicalRoot, `.autopilot/runs/${run.id}`)
     const integrationBranch = `autopilot/${run.id}`
     if (this.deps.gitAvailable !== false) {
       await this.deps.worktrees.ensure(integrationPath, integrationBranch)
     }
     for (const item of next.workItems.filter((entry) => entry.status === "verifying")) {
       const tree = next.worktrees.find((entry) => entry.workItemId === item.id)
-      const worktree = tree?.path ?? `.autopilot/worktrees/${item.id}`
+      const worktree = resolveUnderRoot(
+        this.deps.canonicalRoot,
+        tree?.path ?? `.autopilot/worktrees/${item.id}`,
+      )
       const baseRevision = tree?.baseSha ?? this.deps.git.head(worktree)
       await this.verification.verifyAndIntegrate({
         runId: run.id,
@@ -266,9 +274,16 @@ export class Supervisor {
         baseRevision,
       })
     }
+    unblockReadyWorkItems({
+      store: this.deps.store,
+      runId: run.id,
+      fencingToken: this.fencingToken,
+    })
     await this.lifecycle.fillSlots({
       runId: run.id,
       fencingToken: this.fencingToken,
+      canonicalRoot: this.deps.canonicalRoot,
+      startPoint: integrationPath,
       ...(this.deps.gitAvailable === undefined ? {} : { gitAvailable: this.deps.gitAvailable }),
       instructionFor: async (item) => {
         if (!this.catalog.get(item.id)) {

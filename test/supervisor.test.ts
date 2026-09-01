@@ -289,6 +289,25 @@ describe("Supervisor recovery and identity", () => {
     expect(runner.prompted[0]?.instruction.prompt).toContain("Do not work on unrelated Work Items.")
   })
 
+  test("resolves git and worktree directories against canonicalRoot", async () => {
+    const worktrees = new InMemoryWorktreePort()
+    const git = new FakeGitPort()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees,
+      process: new FakeProcessPort(),
+      git,
+      canonicalRoot: "/repo",
+      gitAvailable: true,
+    })
+    supervisor.start("Fix the failing authentication tests.")
+    await supervisor.tick()
+    expect(worktrees.reserved.some((entry) => entry.path.startsWith("/repo/.autopilot/"))).toBe(true)
+    expect(worktrees.reserved.every((entry) => entry.path.startsWith("/"))).toBe(true)
+  })
+
   test("renews or re-acquires the Supervisor Lease after a long backoff", async () => {
     let now = 1_000
     const store = AutopilotStore.memory({ clock: () => now })

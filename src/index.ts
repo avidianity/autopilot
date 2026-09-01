@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 import { AutopilotStore } from "./core/store.js"
+import { selectWorkSourcesFromObjective } from "./planning/interpret.js"
 import { ScriptedSemanticEngine } from "./planning/scripted-engine.js"
 import type { SemanticEngine, SemanticRequest, SemanticResult } from "./planning/types.js"
 import { parseAutopilotInput, Supervisor } from "./supervisor.js"
@@ -23,16 +24,14 @@ const supervisors = new Map<string, Supervisor>()
 
 function scriptedFallbackEngine(): ScriptedSemanticEngine {
   return new ScriptedSemanticEngine({
-    "interpret-objective": {
-      operation: "interpret-objective",
-      sources: [
-        {
-          id: "direct-objective",
-          rank: 1,
-          reason: "default direct objective",
-          hints: {},
-        },
-      ],
+    "interpret-objective": (request) => {
+      if (request.operation !== "interpret-objective") {
+        throw new Error("unexpected operation")
+      }
+      return {
+        operation: "interpret-objective",
+        sources: selectWorkSourcesFromObjective(request.objective),
+      }
     },
     "propose-plan": (request) => {
       if (request.operation !== "propose-plan") {
@@ -121,7 +120,14 @@ export const AutopilotPlugin = (async ({ client, directory }) => {
       if (!sessionId) {
         return
       }
-      const supervisor = supervisors.get(directory)
+      let supervisor = supervisors.get(directory)
+      if (!supervisor && (event.type === "session.error" || event.type === "session.idle")) {
+        try {
+          supervisor = supervisorFor(directory, client as unknown as OpenCodeSessionClient)
+        } catch {
+          return
+        }
+      }
       if (!supervisor) {
         return
       }

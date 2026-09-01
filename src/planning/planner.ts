@@ -8,14 +8,7 @@ import type {
   SemanticEngine,
 } from "./types.js"
 
-const EXECUTING = new Set([
-  "launching",
-  "running",
-  "verifying",
-  "integrating",
-  "repairing",
-  "unknown",
-])
+const EXECUTING = new Set(["launching", "running", "verifying", "integrating", "repairing"])
 
 export function applyPlan(input: {
   store: AutopilotStore
@@ -60,6 +53,37 @@ export function applyPlan(input: {
     }
     return applied
   })
+}
+
+export function unblockReadyWorkItems(input: {
+  store: AutopilotStore
+  runId: string
+  fencingToken: number
+}): WorkItemRecord[] {
+  const items = input.store.snapshot(input.runId).workItems
+  return input.store.mutate(input.runId, input.fencingToken, (tx) => {
+    const released: WorkItemRecord[] = []
+    for (const item of items) {
+      if (item.status !== "blocked" || item.dependencies.length === 0) {
+        continue
+      }
+      if (!dependenciesCompleted(item, items)) {
+        continue
+      }
+      released.push(tx.transitionWorkItem(item.id, "ready", "dependencies completed"))
+    }
+    return released
+  })
+}
+
+export function dependenciesCompleted(item: WorkItemRecord, items: WorkItemRecord[]): boolean {
+  return item.dependencies.every((dependency) =>
+    items.some(
+      (candidate) =>
+        candidate.status === "completed" &&
+        (candidate.id === dependency || candidate.sourceKey === dependency),
+    ),
+  )
 }
 
 export async function applyPlanFromEngine(input: {

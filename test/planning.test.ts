@@ -4,7 +4,8 @@ import { AutopilotStore } from "../src/core/store.js"
 import { buildCapabilitySnapshot } from "../src/planning/capabilities.js"
 import { compileWorkerInstruction } from "../src/planning/compiler.js"
 import { discoverEvidence } from "../src/planning/discover.js"
-import { applyPlan, applyPlanFromEngine } from "../src/planning/planner.js"
+import { selectWorkSourcesFromObjective } from "../src/planning/interpret.js"
+import { applyPlan, applyPlanFromEngine, unblockReadyWorkItems } from "../src/planning/planner.js"
 import { ScriptedSemanticEngine } from "../src/planning/scripted-engine.js"
 import { SemanticValidationError } from "../src/planning/semantic-engine.js"
 import { DirectObjectiveSource, WorkSourceRegistry } from "../src/planning/sources.js"
@@ -56,6 +57,14 @@ describe("discovery", () => {
     expect(evidence[0]?.sourceId).toBe("direct-objective")
     expect(evidence[0]?.sourceKey).toBe("direct-objective:Fix the failing authentication tests.")
     expect(evidence[0]?.fingerprint.length).toBeGreaterThan(0)
+  })
+})
+
+describe("objective interpretation heuristics", () => {
+  test("Work through GitHub issues selects github-issues", () => {
+    const ids = selectWorkSourcesFromObjective("Work through GitHub issues").map((source) => source.id)
+    expect(ids).toContain("github-issues")
+    expect(ids).toContain("direct-objective")
   })
 })
 
@@ -182,6 +191,51 @@ describe("plan reconciliation", () => {
     })
     expect(applied[0]?.status).toBe("completed")
     expect(store.snapshot(run.id).workItems).toHaveLength(1)
+  })
+
+  test("blocked Work Items become ready when every dependency is completed", () => {
+    const { store, run, lease } = openRun()
+    applyPlan({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      proposal: {
+        operation: "propose-plan",
+        items: [
+          {
+            sourceKey: "dep-a",
+            title: "Dependency A",
+            objective: "Finish A.",
+            dependencies: [],
+          },
+          {
+            sourceKey: "blocked-child",
+            title: "Child",
+            objective: "Wait for A.",
+            dependencies: ["dep-a"],
+            blocked: true,
+            blockedReason: "waiting on dep-a",
+          },
+        ],
+      },
+    })
+    const parent = store.snapshot(run.id).workItems.find((item) => item.sourceKey === "dep-a")
+    expect(parent).toBeDefined()
+    store.mutate(run.id, lease.fencingToken, (tx) => {
+      tx.transitionWorkItem(parent!.id, "launching", "schedule")
+      tx.transitionWorkItem(parent!.id, "running", "session attached")
+      tx.transitionWorkItem(parent!.id, "verifying", "idle")
+      tx.transitionWorkItem(parent!.id, "integrating", "checks passed")
+      tx.transitionWorkItem(parent!.id, "completed", "integrated")
+    })
+    unblockReadyWorkItems({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+    })
+    expect(store.snapshot(run.id).workItems.find((item) => item.sourceKey === "blocked-child")?.status).toBe(
+      "ready",
+    )
   })
 
   test("records a blocked diagnostic Work Item after invalid semantic output is retried", async () => {
