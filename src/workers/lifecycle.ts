@@ -44,7 +44,11 @@ export class WorkerLifecycle {
       active.flatMap((item) => input.fileScopes?.get(item.id) ?? []),
     )
     const ready = snapshot.workItems
-      .filter((item) => item.status === "ready" && this.dependenciesMet(item, snapshot.workItems))
+      .filter(
+        (item) =>
+          (item.status === "ready" || item.status === "repairing") &&
+          this.dependenciesMet(item, snapshot.workItems),
+      )
       .sort((left, right) => left.createdAt - right.createdAt)
 
     for (const item of ready) {

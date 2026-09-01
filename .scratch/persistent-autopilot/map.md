@@ -24,10 +24,15 @@ An empty work queue means idle rediscovery with bounded backoff, never implicit 
 - [Implement durable Supervisor state core](issues/08-implement-durable-supervisor-state-core.md): AutopilotStore persists runs, fenced leases, Work Item transitions, launch identities, and observed-session reconciliation in SQLite and memory.
 - [Implement discovery, planning, and Capability core](issues/09-implement-discovery-planning-and-capability-core.md): selected Work Sources emit evidence, a schema-constrained Semantic Engine proposes plans and instructions, and deterministic code applies and compiles them.
 - [Implement SessionRunner and Worker lifecycle](issues/10-implement-session-runner-and-worker-lifecycle.md): durable launch identities, worktree reservations, concurrency gates, idle-as-verifying, abort, and title-based recovery.
+- [Implement verification, repair, and integration](issues/11-implement-verification-repair-and-integration.md): immutable Verification Plans, baseline-aware checks, integration revert, repair, and stuck isolation.
+- [Implement plugin control and Supervisor loop](issues/12-implement-plugin-control-and-supervisor-loop.md): `/autopilot` command plus deterministic Supervisor control loop.
+- [Implement built-in Work Sources](issues/13-implement-built-in-work-sources.md): direct objective, GitHub, checks, markdown tasks, files, and TODOs.
+- [Verify Autopilot end to end](issues/14-verify-autopilot-end-to-end.md): 60 deterministic tests covering persistence, planning, workers, verification, and control.
+- [Package, install, and document Autopilot](issues/15-package-install-and-document-autopilot.md): README plus project `opencode.json` plugin entry.
 
 ## Not yet specified
 
-- Performance limits, observability details, and hardening exposed by the first working end-to-end loop.
+- Performance limits, observability details, and hardening exposed by a live multi-hour OpenCode run.
 
 ## Out of scope
 
