@@ -294,11 +294,11 @@ export class VerificationEngine {
     const max = this.store.getRun(runId)?.maxRetriesPerWorkItem ?? 3
     this.store.mutate(runId, fencingToken, (tx) => {
       const current = tx.getWorkItem(item.id)
-      tx.incrementFailedAttempts(item.id, 1)
-      const attempts = tx.getWorkItem(item.id).failedAttempts
       if (current.status !== from) {
         return
       }
+      tx.incrementFailedAttempts(item.id, 1)
+      const attempts = tx.getWorkItem(item.id).failedAttempts
       const reason = result.reason ?? "verification failed"
       if (attempts >= max) {
         if (from === "integrating") {

@@ -82,6 +82,7 @@ export class FakeSessionRunner implements SessionRunner {
   createCalls = 0
   onCreate?: () => void
   beforeCreate?: () => Promise<void>
+  promptImpl?: (sessionId: string, instruction: { command?: string; prompt?: string }) => Promise<void>
 
   async create(input: { title: string; workingDirectory?: string }): Promise<RunnerSession> {
     await this.beforeCreate?.()
@@ -94,6 +95,7 @@ export class FakeSessionRunner implements SessionRunner {
 
   async prompt(sessionId: string, instruction: { command?: string; prompt?: string }): Promise<void> {
     this.prompted.push({ sessionId, instruction })
+    await this.promptImpl?.(sessionId, instruction)
   }
 
   async abort(sessionId: string): Promise<void> {

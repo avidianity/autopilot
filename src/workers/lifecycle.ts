@@ -131,6 +131,7 @@ export class WorkerLifecycle {
         tx.transitionWorkItem(item.id, "launching", "schedule")
         return tx.beginWorkerAttempt({ workItemId: item.id, launchToken })
       })
+      let session: Awaited<ReturnType<SessionRunner["create"]>>
       try {
         if (input.gitAvailable !== false) {
           const baseSha = await this.worktrees.ensure(path, branch, input.startPoint)
@@ -140,7 +141,7 @@ export class WorkerLifecycle {
             })
           }
         }
-        const session = await this.runner.create({
+        session = await this.runner.create({
           title: encodeLaunchTitle({
             runId: input.runId,
             workItemId: item.id,
@@ -148,11 +149,6 @@ export class WorkerLifecycle {
           }),
           ...(input.gitAvailable === false ? {} : { workingDirectory: path }),
         })
-        this.store.mutate(input.runId, input.fencingToken, (tx) => {
-          tx.attachSession(attempt.id, session.id)
-          tx.transitionWorkItem(item.id, "running", "session attached")
-        })
-        await this.runner.prompt(session.id, await input.instructionFor(item))
       } catch {
         this.store.mutate(input.runId, input.fencingToken, (tx) => {
           tx.recordUnknown(item.id, attempt.id, "launch failed")
@@ -160,6 +156,13 @@ export class WorkerLifecycle {
         this.leaveUnknown(input.runId, input.fencingToken, item.id)
         continue
       }
+      this.store.mutate(input.runId, input.fencingToken, (tx) => {
+        tx.attachSession(attempt.id, session.id)
+        tx.transitionWorkItem(item.id, "running", "session attached")
+      })
+      try {
+        await this.runner.prompt(session.id, await input.instructionFor(item))
+      } catch {}
       for (const file of scope) {
         activeFiles.add(file)
       }

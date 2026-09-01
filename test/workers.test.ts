@@ -114,6 +114,32 @@ describe("Worker lifecycle", () => {
     expect(runner.createCalls).toBe(1)
   })
 
+  test("prompt throw after attach leaves running and does not launch a second Worker", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    runner.promptImpl = async () => {
+      throw new Error("prompt failed")
+    }
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("running")
+    expect(runner.createCalls).toBe(1)
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    expect(runner.createCalls).toBe(1)
+    expect(store.getWorkItem(item.id)?.status).toBe("running")
+    expect(store.getWorkItem(item.id)?.status).not.toBe("repairing")
+  })
+
   test("treats session idle as candidate verification, not completion", async () => {
     const { store, run, lease, runner, lifecycle } = setup()
     const item = readyItem(store, run.id, lease.fencingToken, {

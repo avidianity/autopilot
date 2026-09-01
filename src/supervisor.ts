@@ -117,14 +117,21 @@ export class Supervisor {
   }
 
   pause(): string {
+    const run = this.requireRun()
+    if (run.status === "stopped") {
+      return this.status()
+    }
     this.ensureLoop()
     this.mutate((tx) => tx.setRunStatus("paused", "pause"))
     return this.status()
   }
 
   resume(): string {
-    this.ensureLoop()
     const run = this.requireRun()
+    if (run.status === "stopped") {
+      return this.status()
+    }
+    this.ensureLoop()
     if (run.status === "recovery-hold" || run.status === "paused") {
       this.mutate((tx) => tx.setRunStatus("enabled", "resume"))
     }
@@ -133,6 +140,11 @@ export class Supervisor {
   }
 
   async stop(force = false): Promise<string> {
+    const run = this.requireRun()
+    if (run.status === "stopped") {
+      this.stopLoop()
+      return this.status()
+    }
     this.ensureLoop()
     this.mutate((tx) => tx.setRunStatus(force ? "force-stopping" : "stopping", "stop"))
     if (force) {
@@ -389,9 +401,9 @@ export class Supervisor {
     if (this.createdThisProcess || this.recoveryHoldAppliedThisProcess) {
       return
     }
+    this.recoveryHoldAppliedThisProcess = true
     if (run.status === "enabled" && run.autoResumeAfterRestart === false) {
       this.mutate((tx) => tx.setRunStatus("recovery-hold", "restart"))
-      this.recoveryHoldAppliedThisProcess = true
     }
   }
 

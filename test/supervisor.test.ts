@@ -92,6 +92,59 @@ describe("Supervisor control", () => {
     expect(supervisor.status()).toContain("first")
   })
 
+  test("attach to Recovery Hold then resume then tick stays enabled", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const first = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "first",
+      leaseTtlMs: 60_000,
+    })
+    first.start("Fix the failing authentication tests.")
+    now += 120_000
+    const holder = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "holder",
+      leaseTtlMs: 60_000,
+    })
+    holder.start("Fix the failing authentication tests.")
+    expect(holder.status()).toContain("recovery-hold")
+    now += 120_000
+    const attached = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "attached",
+      leaseTtlMs: 60_000,
+    })
+    attached.start("Fix the failing authentication tests.")
+    expect(attached.status()).toContain("recovery-hold")
+    attached.resume()
+    expect(attached.status()).toContain("idle")
+    await attached.tick()
+    expect(attached.status()).not.toContain("recovery-hold")
+    expect(store.getActiveRun("/repo")?.status).toBe("enabled")
+  })
+
   test("resume after Recovery Hold stays enabled on the next tick", async () => {
     let now = 1_000
     const store = AutopilotStore.memory({ clock: () => now })
@@ -181,6 +234,15 @@ describe("Supervisor control", () => {
     releaseCreate()
     await Promise.all([first, second])
     expect(runner.createCalls).toBe(1)
+  })
+
+  test("pause and resume on a stopped Autopilot Run leave it stopped", async () => {
+    const { supervisor } = createSupervisor()
+    supervisor.start("Keep going.")
+    await supervisor.stop()
+    expect(supervisor.pause()).toContain("stopped")
+    expect(supervisor.resume()).toContain("stopped")
+    expect(supervisor.status()).toContain("stopped")
   })
 
   test("pause stops scheduling and resume continues", async () => {
