@@ -22,6 +22,7 @@ An empty work queue means idle rediscovery with bounded backoff, never implicit 
 - [Define verification, repair, and completion state machine](issues/06-define-verification-repair-and-completion-state-machine.md): immutable Verification Plans and persisted evidence control completion, with baseline-aware checks, constrained execution, bounded repair, stuck isolation, and healthy idle rediscovery.
 - [Establish repository, package, and test foundation](issues/07-establish-repository-package-and-test-foundation.md): initialized Git and a pinned Bun/TypeScript OpenCode plugin package with strict test, typecheck, lint, and build gates.
 - [Implement durable Supervisor state core](issues/08-implement-durable-supervisor-state-core.md): AutopilotStore persists runs, fenced leases, Work Item transitions, launch identities, and observed-session reconciliation in SQLite and memory.
+- [Implement discovery, planning, and Capability core](issues/09-implement-discovery-planning-and-capability-core.md): selected Work Sources emit evidence, a schema-constrained Semantic Engine proposes plans and instructions, and deterministic code applies and compiles them.
 
 ## Not yet specified
 
