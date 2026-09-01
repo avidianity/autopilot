@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { AutopilotStore } from "../src/core/store.js"
 import { ScriptedSemanticEngine } from "../src/planning/scripted-engine.js"
@@ -57,6 +60,29 @@ describe("Supervisor control", () => {
     expect(supervisor.status()).toContain("stopped")
     await supervisor.tick()
     expect(supervisor.status()).toContain("stopped")
+  })
+
+  test("stop reports status without closing sqlite", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "autopilot-stop-"))
+    const store = AutopilotStore.sqlite(join(directory, "state.sqlite"))
+    const supervisor = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: directory,
+      gitAvailable: false,
+    })
+    try {
+      supervisor.start("Keep going.")
+      expect(supervisor.stop()).toContain("stopped")
+      expect(supervisor.status()).toContain("stopped")
+    } finally {
+      supervisor.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   test("rejects a second Autopilot Run for the same root", () => {

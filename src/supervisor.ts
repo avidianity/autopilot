@@ -150,19 +150,23 @@ export class Supervisor {
     )
     if (!active) {
       this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
-      this.dispose()
+      this.stopLoop()
     }
     return this.status()
   }
 
   dispose(): void {
+    this.stopLoop()
+    this.deps.store.close()
+  }
+
+  private stopLoop(): void {
     this.disposed = true
     this.looping = false
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = undefined
     }
-    this.deps.store.close()
   }
 
   ensureLoop(): void {
@@ -224,7 +228,7 @@ export class Supervisor {
       )
       if (!active) {
         this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
-        this.dispose()
+        this.stopLoop()
       }
       return
     }

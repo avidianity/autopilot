@@ -280,4 +280,24 @@ describe("Worker lifecycle", () => {
     expect(worktrees.reserved[0]?.startPoint).toBe(startPoint)
     expect(worktrees.reserved[0]?.path.startsWith("/")).toBe(true)
   })
+
+  test("repair reuses a relative worktree reservation without colliding", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    const storedPath = `.autopilot/worktrees/${item.id}`
+    store.mutate(run.id, lease.fencingToken, (tx) => {
+      tx.reserveWorktree(item.id, storedPath, `autopilot/${item.id}`)
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      canonicalRoot: "/repo",
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    expect(runner.createCalls).toBe(1)
+    expect(store.snapshot(run.id).worktrees[0]?.path).toBe(storedPath)
+  })
 })

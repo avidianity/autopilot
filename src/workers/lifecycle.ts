@@ -123,11 +123,11 @@ export class WorkerLifecycle {
       }
       const launchToken = crypto.randomUUID()
       const existing = snapshot.worktrees.find((tree) => tree.workItemId === item.id)
-      const relative = existing?.path ?? `.autopilot/worktrees/${item.id}`
-      const path = input.canonicalRoot ? resolveUnderRoot(input.canonicalRoot, relative) : relative
+      const storedPath = existing?.path ?? `.autopilot/worktrees/${item.id}`
+      const path = input.canonicalRoot ? resolveUnderRoot(input.canonicalRoot, storedPath) : storedPath
       const branch = existing?.branch ?? `autopilot/${item.id}`
       const attempt = this.store.mutate(input.runId, input.fencingToken, (tx) => {
-        tx.reserveWorktree(item.id, path, branch, existing?.baseSha)
+        tx.reserveWorktree(item.id, storedPath, branch, existing?.baseSha)
         tx.transitionWorkItem(item.id, "launching", "schedule")
         return tx.beginWorkerAttempt({ workItemId: item.id, launchToken })
       })
@@ -135,7 +135,7 @@ export class WorkerLifecycle {
         const baseSha = await this.worktrees.ensure(path, branch, input.startPoint)
         if (baseSha && !existing?.baseSha) {
           this.store.mutate(input.runId, input.fencingToken, (tx) => {
-            tx.reserveWorktree(item.id, path, branch, baseSha)
+            tx.reserveWorktree(item.id, storedPath, branch, baseSha)
           })
         }
       }
