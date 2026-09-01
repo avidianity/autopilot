@@ -12,36 +12,55 @@ export interface SessionRunner {
 
 export interface OpenCodeSessionClient {
   session: {
-    create(body: { title: string }): Promise<{ data: { id: string; title: string } }>
-    promptAsync(path: { id: string }, body: { parts: Array<{ type: "text"; text: string }> }): Promise<unknown>
-    abort(id: { id: string }): Promise<unknown>
-    list(): Promise<{ data: Array<{ id: string; title: string }> }>
+    create(options?: {
+      body?: { title?: string }
+      query?: { directory?: string }
+    }): Promise<{ data?: { id: string; title?: string } }>
+    promptAsync(options: {
+      path: { id: string }
+      body?: { parts: Array<{ type: "text"; text: string }> }
+    }): Promise<unknown>
+    abort(options: { path: { id: string } }): Promise<unknown>
+    list(options?: { query?: { directory?: string } }): Promise<{
+      data?: Array<{ id: string; title?: string }>
+    }>
   }
+}
+
+function sessionFrom(
+  result: { data?: { id: string; title?: string } } | { id: string; title?: string },
+): RunnerSession {
+  const data = "data" in result && result.data ? result.data : (result as { id: string; title?: string })
+  return { id: data.id, title: data.title ?? "" }
 }
 
 export class OpenCodeSessionRunner implements SessionRunner {
   constructor(private readonly client: OpenCodeSessionClient) {}
 
   async create(input: { title: string; workingDirectory?: string }): Promise<RunnerSession> {
-    const created = await this.client.session.create({ title: input.title })
-    return { id: created.data.id, title: created.data.title }
+    const created = await this.client.session.create({
+      body: { title: input.title },
+      ...(input.workingDirectory ? { query: { directory: input.workingDirectory } } : {}),
+    })
+    return sessionFrom(created)
   }
 
   async prompt(sessionId: string, instruction: { command?: string; prompt?: string }): Promise<void> {
     const text = instruction.command ?? instruction.prompt ?? ""
-    await this.client.session.promptAsync(
-      { id: sessionId },
-      { parts: [{ type: "text", text }] },
-    )
+    await this.client.session.promptAsync({
+      path: { id: sessionId },
+      body: { parts: [{ type: "text", text }] },
+    })
   }
 
   async abort(sessionId: string): Promise<void> {
-    await this.client.session.abort({ id: sessionId })
+    await this.client.session.abort({ path: { id: sessionId } })
   }
 
   async list(): Promise<RunnerSession[]> {
     const listed = await this.client.session.list()
-    return listed.data.map((session) => ({ id: session.id, title: session.title }))
+    const rows = listed.data ?? []
+    return rows.map((session) => ({ id: session.id, title: session.title ?? "" }))
   }
 }
 

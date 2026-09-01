@@ -1,7 +1,9 @@
-import type { AutopilotStore } from "./core/store.js"
+import { StaleLeaseError, type AutopilotStore } from "./core/store.js"
+import { buildCapabilitySnapshot } from "./planning/capabilities.js"
+import { compileWorkerInstruction } from "./planning/compiler.js"
 import { discoverEvidence } from "./planning/discover.js"
 import { applyPlanFromEngine } from "./planning/planner.js"
-import type { SemanticEngine } from "./planning/types.js"
+import type { Capability, SemanticEngine } from "./planning/types.js"
 import { DirectObjectiveSource, WorkSourceRegistry } from "./planning/sources.js"
 import type { WorkSourceAdapter } from "./planning/types.js"
 import { VerificationCatalog, VerificationEngine, createDefaultPlan } from "./verify/engine.js"
@@ -21,6 +23,9 @@ export interface SupervisorDeps {
   canonicalRoot: string
   gitAvailable?: boolean
   autoResumeAfterRestart?: boolean
+  capabilities?: Capability[]
+  onTickError?: (error: unknown) => void
+  pollIntervalMs?: number
 }
 
 export class Supervisor {
@@ -28,13 +33,31 @@ export class Supervisor {
   private readonly verification: VerificationEngine
   private readonly catalog = new VerificationCatalog()
   private readonly registry = new WorkSourceRegistry()
-  private readonly instanceId: string
+  readonly instanceId: string
+  private readonly capabilities: Capability[]
   private runId: string | undefined
   private fencingToken = 0
   private pollMs = 30_000
+  private createdThisProcess = false
+  private looping = false
+  private disposed = false
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private backoffMs = 30_000
+  private lastSignature = ""
+  private lastTickError: string | undefined
 
   constructor(private readonly deps: SupervisorDeps) {
-    this.instanceId = deps.instanceId ?? "supervisor"
+    this.instanceId = deps.instanceId ?? crypto.randomUUID()
+    this.capabilities =
+      deps.capabilities ??
+      buildCapabilitySnapshot({
+        commands: [],
+        skills: [],
+        agents: [],
+        tools: [],
+        mcp: [],
+        repository: [],
+      })
     this.lifecycle = new WorkerLifecycle(deps.store, deps.runner, deps.worktrees)
     this.verification = new VerificationEngine(
       deps.store,
@@ -49,23 +72,35 @@ export class Supervisor {
     }
   }
 
+  sourceIds(): string[] {
+    return [
+      "direct-objective",
+      ...(this.deps.sources ?? []).map((source) => source.id),
+    ]
+  }
+
   start(objective: string): string {
     const existing = this.deps.store.getActiveRun(this.deps.canonicalRoot)
     if (existing) {
       this.runId = existing.id
+      this.pollMs = existing.pollIntervalMs
       const lease = this.deps.store.acquireLease(existing.id, this.instanceId, 60_000)
       this.fencingToken = lease.fencingToken
+      this.applyRecoveryHold(existing)
       return `Autopilot already running\n\nObjective:\n${existing.objective}`
     }
     const run = this.deps.store.createRun({
       canonicalRoot: this.deps.canonicalRoot,
       objective,
       autoResumeAfterRestart: this.deps.autoResumeAfterRestart ?? false,
+      ...(this.deps.pollIntervalMs === undefined ? {} : { pollIntervalMs: this.deps.pollIntervalMs }),
     })
     const lease = this.deps.store.acquireLease(run.id, this.instanceId, 60_000)
     this.runId = run.id
     this.fencingToken = lease.fencingToken
     this.pollMs = run.pollIntervalMs
+    this.createdThisProcess = true
+    this.backoffMs = this.pollMs
     return this.status()
   }
 
@@ -79,6 +114,7 @@ export class Supervisor {
     if (run.status === "recovery-hold" || run.status === "paused") {
       this.mutate((tx) => tx.setRunStatus("enabled", "resume"))
     }
+    this.backoffMs = this.pollMs
     return this.status()
   }
 
@@ -102,8 +138,26 @@ export class Supervisor {
     )
     if (!active) {
       this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
+      this.dispose()
     }
     return this.status()
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.looping = false
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
+  }
+
+  ensureLoop(): void {
+    if (this.looping || this.disposed) {
+      return
+    }
+    this.looping = true
+    void this.loopOnce()
   }
 
   handleIdle(sessionId: string): void {
@@ -117,6 +171,8 @@ export class Supervisor {
       sessionId,
       kind: "idle",
     })
+    this.backoffMs = this.pollMs
+    void this.safeTick()
   }
 
   async tick(): Promise<void> {
@@ -125,24 +181,37 @@ export class Supervisor {
       return
     }
     this.runId = run.id
-    const lease = this.deps.store.renewLease(run.id, this.instanceId, this.fencingToken, 60_000)
-    this.fencingToken = lease.fencingToken
-    if (run.status === "paused" || run.status === "recovery-hold" || run.status === "stopped") {
+    this.pollMs = run.pollIntervalMs
+    try {
+      const lease = this.deps.store.renewLease(run.id, this.instanceId, this.fencingToken, 60_000)
+      this.fencingToken = lease.fencingToken
+    } catch (error) {
+      if (error instanceof StaleLeaseError && this.fencingToken === 0) {
+        const lease = this.deps.store.acquireLease(run.id, this.instanceId, 60_000)
+        this.fencingToken = lease.fencingToken
+      } else {
+        throw error
+      }
+    }
+    this.applyRecoveryHold(run)
+    const current = this.deps.store.getRun(run.id) ?? run
+    if (current.status === "paused" || current.status === "recovery-hold" || current.status === "stopped") {
       return
     }
-    if (run.status === "stopping" || run.status === "force-stopping") {
+    if (current.status === "stopping" || current.status === "force-stopping") {
       const snapshot = this.deps.store.snapshot(run.id)
       const active = snapshot.workItems.some((item) =>
         ["launching", "running", "verifying", "integrating"].includes(item.status),
       )
       if (!active) {
         this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
+        this.dispose()
       }
       return
     }
     await this.lifecycle.recover({ runId: run.id, fencingToken: this.fencingToken })
     const evidence = await discoverEvidence({
-      objective: run.objective,
+      objective: current.objective,
       engine: this.deps.engine,
       registry: this.registry,
     })
@@ -152,7 +221,7 @@ export class Supervisor {
       runId: run.id,
       fencingToken: this.fencingToken,
       engine: this.deps.engine,
-      objective: run.objective,
+      objective: current.objective,
       evidence,
       prior: snapshot.workItems.map((item) => ({
         ...(item.sourceKey ? { sourceKey: item.sourceKey } : {}),
@@ -174,13 +243,16 @@ export class Supervisor {
       runId: run.id,
       fencingToken: this.fencingToken,
       ...(this.deps.gitAvailable === undefined ? {} : { gitAvailable: this.deps.gitAvailable }),
-      instructionFor: (item) => {
+      instructionFor: async (item) => {
         if (!this.catalog.get(item.id)) {
           this.catalog.freezePlan(createDefaultPlan(item))
         }
-        return {
-          prompt: item.objective,
-        }
+        return compileWorkerInstruction({
+          engine: this.deps.engine,
+          objective: current.objective,
+          workItem: { id: item.id, title: item.title, objective: item.objective },
+          capabilities: this.capabilities,
+        })
       },
     })
   }
@@ -205,7 +277,7 @@ export class Supervisor {
       run.status === "enabled" && running.length === 0 && ready.length === 0
         ? "idle"
         : run.status
-    return [
+    const lines = [
       `Autopilot: ${label}`,
       "",
       "Objective:",
@@ -231,7 +303,65 @@ export class Supervisor {
       "",
       "Completed this run:",
       `${completed.length} tasks`,
-    ].join("\n")
+    ]
+    if (this.lastTickError) {
+      lines.push("", "Last tick error:", this.lastTickError)
+    }
+    return lines.join("\n")
+  }
+
+  private applyRecoveryHold(run: { id: string; status: string; autoResumeAfterRestart: boolean }): void {
+    if (this.createdThisProcess) {
+      return
+    }
+    if (run.status === "enabled" && run.autoResumeAfterRestart === false) {
+      this.mutate((tx) => tx.setRunStatus("recovery-hold", "restart"))
+    }
+  }
+
+  private async safeTick(): Promise<void> {
+    try {
+      await this.tick()
+      this.lastTickError = undefined
+    } catch (error) {
+      this.lastTickError = error instanceof Error ? error.message : String(error)
+      this.deps.onTickError?.(error)
+    }
+  }
+
+  private async loopOnce(): Promise<void> {
+    if (this.disposed) {
+      this.looping = false
+      return
+    }
+    const before = this.signature()
+    await this.safeTick()
+    const after = this.signature()
+    if (after === before && after === this.lastSignature) {
+      this.backoffMs = Math.min(Math.max(this.backoffMs, 30_000) * 2, 5 * 60_000)
+    } else {
+      this.backoffMs = this.pollMs
+    }
+    this.lastSignature = after
+    if (this.disposed) {
+      this.looping = false
+      return
+    }
+    this.timer = setTimeout(() => {
+      void this.loopOnce()
+    }, this.backoffMs)
+  }
+
+  private signature(): string {
+    const run = this.deps.store.getActiveRun(this.deps.canonicalRoot)
+    if (!run) {
+      return "none"
+    }
+    const snapshot = this.deps.store.snapshot(run.id)
+    return JSON.stringify({
+      status: snapshot.run.status,
+      items: snapshot.workItems.map((item) => `${item.id}:${item.status}`),
+    })
   }
 
   private requireRun() {

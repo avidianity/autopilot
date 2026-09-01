@@ -121,4 +121,158 @@ describe("Work Sources", () => {
     expect(explicit[0]?.sourceKey).toBe("file:docs/plan.md")
     expect(checks.some((entry) => entry.sourceKey.startsWith("check:"))).toBe(true)
   })
+
+  test("GitHub invalid JSON yields no evidence", async () => {
+    const process = new FakeProcessPort()
+    process.setExit("gh", 0)
+    const original = process.run.bind(process)
+    process.run = async (input) => {
+      const result = await original(input)
+      return { ...result, stdout: "not-json{" }
+    }
+    const source = new GitHubIssueSource(process)
+    expect(await source.discover({ objective: "issues", hints: {} })).toEqual([])
+  })
+})
+
+describe("Supervisor recovery and identity", () => {
+  test("open of enabled run without auto-resume enters recovery-hold and does not schedule", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const first = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "first",
+    })
+    first.start("Keep the repository healthy.")
+    now += 120_000
+    const runner = new FakeSessionRunner()
+    const second = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "second",
+    })
+    second.start("Keep the repository healthy.")
+    expect(second.status()).toContain("recovery-hold")
+    await second.tick()
+    expect(runner.createCalls).toBe(0)
+  })
+
+  test("distinct instanceIds refuse a live Supervisor Lease", () => {
+    const store = AutopilotStore.memory()
+    const a = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    const b = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    expect(a.instanceId).not.toBe(b.instanceId)
+    a.start("Keep going.")
+    expect(() => b.start("Keep going.")).toThrow()
+  })
+
+  test("loop while paused does not schedule Workers", async () => {
+    const runner = new FakeSessionRunner()
+    const paused = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      pollIntervalMs: 20,
+    })
+    paused.start("Fix the failing authentication tests.")
+    paused.pause()
+    paused.ensureLoop()
+    await Bun.sleep(60)
+    paused.dispose()
+    expect(runner.createCalls).toBe(0)
+  })
+
+  test("registered GitHub and markdown sources discover through the registry", async () => {
+    const process = new FakeProcessPort()
+    process.setExit("gh", 0)
+    const original = process.run.bind(process)
+    process.run = async (input) => {
+      const result = await original(input)
+      return { ...result, stdout: JSON.stringify([{ number: 7, title: "Paginate", body: "" }]) }
+    }
+    const files = new MemoryFilePort({
+      "docs/plan.md": "- [ ] Ship markdown task",
+    })
+    const runner = new FakeSessionRunner()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: new ScriptedSemanticEngine({
+        "interpret-objective": {
+          operation: "interpret-objective",
+          sources: [
+            { id: "github-issues", rank: 1, reason: "issues", hints: {} },
+            { id: "markdown-tasks", rank: 2, reason: "md", hints: { pattern: "**/*.md" } },
+          ],
+        },
+        "propose-plan": (request) => ({
+          operation: "propose-plan",
+          items:
+            request.operation === "propose-plan"
+              ? request.evidence.map((entry) => ({
+                  sourceKey: entry.sourceKey,
+                  title: entry.title,
+                  objective: entry.body || entry.title,
+                  dependencies: [],
+                }))
+              : [],
+        }),
+      }),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      sources: [new GitHubIssueSource(process), new MarkdownTaskSource(files)],
+    })
+    expect(supervisor.sourceIds()).toContain("github-issues")
+    expect(supervisor.sourceIds()).toContain("markdown-tasks")
+    supervisor.start("Work through issues and markdown.")
+    await supervisor.tick()
+    expect(supervisor.status()).toContain("Paginate")
+    expect(supervisor.status()).toContain("Ship markdown task")
+  })
+
+  test("compile fallback still launches a Worker Instruction prompt", async () => {
+    const { supervisor, runner } = createSupervisor()
+    supervisor.start("Fix the failing authentication tests.")
+    await supervisor.tick()
+    expect(runner.prompted[0]?.instruction.prompt).toContain("Do not work on unrelated Work Items.")
+  })
 })

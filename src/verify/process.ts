@@ -26,6 +26,32 @@ export class FakeProcessPort implements ProcessPort {
   }
 }
 
+export class BunProcessPort implements ProcessPort {
+  async run(input: {
+    command: string
+    args: string[]
+    cwd: string
+    timeoutMs: number
+  }): Promise<ProcessResult> {
+    const subprocess = Bun.spawn([input.command, ...input.args], {
+      cwd: input.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const timer = setTimeout(() => subprocess.kill(), input.timeoutMs)
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(subprocess.stdout).text(),
+        new Response(subprocess.stderr).text(),
+        subprocess.exited,
+      ])
+      return { code: code ?? 1, stdout, stderr }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
+
 export class ConstrainedProcessPort implements ProcessPort {
   constructor(private readonly inner: ProcessPort, private readonly allow: Set<string>) {}
 

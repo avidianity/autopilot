@@ -52,6 +52,7 @@ export interface AutopilotMutation {
 }
 
 interface StoreDriver {
+  read<T>(fn: (state: State) => T): T
   transact<T>(fn: (state: State) => T): T
   close(): void
   reopen(): StoreDriver
@@ -59,6 +60,10 @@ interface StoreDriver {
 
 class MemoryDriver implements StoreDriver {
   constructor(private state: State = emptyState()) {}
+
+  read<T>(fn: (state: State) => T): T {
+    return fn(cloneState(this.state))
+  }
 
   transact<T>(fn: (state: State) => T): T {
     const next = cloneState(this.state)
@@ -132,14 +137,14 @@ export class AutopilotStore {
   }
 
   getRun(runId: string): RunRecord | undefined {
-    return this.driver.transact((state) => {
+    return this.driver.read((state) => {
       const run = state.runs.get(runId)
       return run ? { ...run } : undefined
     })
   }
 
   getActiveRun(canonicalRoot: string): RunRecord | undefined {
-    return this.driver.transact((state) => {
+    return this.driver.read((state) => {
       for (const run of state.runs.values()) {
         if (run.canonicalRoot === canonicalRoot && ACTIVE_RUN_STATUSES.has(run.status)) {
           return { ...run }
@@ -150,14 +155,14 @@ export class AutopilotStore {
   }
 
   getWorkItem(id: string): WorkItemRecord | undefined {
-    return this.driver.transact((state) => {
+    return this.driver.read((state) => {
       const item = state.workItems.get(id)
       return item ? cloneWorkItem(item) : undefined
     })
   }
 
   findAttemptByLaunchToken(launchToken: string): WorkerAttemptRecord | undefined {
-    return this.driver.transact((state) => {
+    return this.driver.read((state) => {
       for (const attempt of state.attempts.values()) {
         if (attempt.launchToken === launchToken) {
           return { ...attempt }
@@ -214,7 +219,7 @@ export class AutopilotStore {
   }
 
   listUnresolvedAttempts(runId: string): WorkerAttemptRecord[] {
-    return this.driver.transact((state) =>
+    return this.driver.read((state) =>
       [...state.attempts.values()]
         .filter(
           (attempt) =>
@@ -248,7 +253,7 @@ export class AutopilotStore {
   }
 
   snapshot(runId: string): RunSnapshot {
-    return this.driver.transact((state) => {
+    return this.driver.read((state) => {
       const run = requireRun(state, runId)
       const lease = state.leases.get(runId)
       return {

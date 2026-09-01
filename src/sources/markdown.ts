@@ -1,9 +1,52 @@
+import { readFile } from "node:fs/promises"
+import { relative, resolve, sep } from "node:path"
+
 import { sha256 } from "../planning/sources.js"
 import type { DiscoveryEvidence, WorkSourceAdapter } from "../planning/types.js"
 
 export interface FilePort {
   read(path: string): Promise<string | undefined>
   list(pattern: string): Promise<string[]>
+}
+
+export class RootFilePort implements FilePort {
+  constructor(private readonly root: string) {}
+
+  async read(path: string): Promise<string | undefined> {
+    const confined = confinePath(this.root, path)
+    try {
+      return await readFile(confined, "utf8")
+    } catch {
+      return undefined
+    }
+  }
+
+  async list(pattern: string): Promise<string[]> {
+    const glob = new Bun.Glob(pattern)
+    const matches: string[] = []
+    for await (const path of glob.scan({ cwd: this.root, onlyFiles: true })) {
+      confinePath(this.root, path)
+      matches.push(path)
+    }
+    return matches
+  }
+}
+
+export function confinePath(root: string, path: string): string {
+  if (path.split(/[\\/]/).includes("..")) {
+    throw new Error(`path escapes project root: ${path}`)
+  }
+  const rootResolved = resolve(root)
+  const resolved = resolve(rootResolved, path)
+  const prefix = rootResolved.endsWith(sep) ? rootResolved : `${rootResolved}${sep}`
+  if (resolved !== rootResolved && !resolved.startsWith(prefix)) {
+    throw new Error(`path escapes project root: ${path}`)
+  }
+  return resolved
+}
+
+export function relativeToRoot(root: string, path: string): string {
+  return relative(resolve(root), confinePath(root, path))
 }
 
 export class MarkdownTaskSource implements WorkSourceAdapter {

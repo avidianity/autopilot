@@ -8,6 +8,7 @@ import {
   StaleLeaseError,
   TransitionError,
 } from "../src/core/store.js"
+import { SqliteDriver } from "../src/core/sqlite-driver.js"
 
 const TTL = 60_000
 
@@ -446,5 +447,41 @@ describe("sqlite AutopilotStore", () => {
     expect(second.getRun(run.id)?.status).toBe("recovery-hold")
     expect(second.getRun(run.id)?.objective).toBe("Keep going until stopped.")
     second.close()
+  })
+
+  test("reads do not persist and getRun does not wipe rows", async () => {
+    directory = await mkdtemp(join(tmpdir(), "autopilot-store-"))
+    const path = join(directory, "state.sqlite")
+    const driver = new SqliteDriver(path)
+    driver.transact((state) => {
+      state.runs.set("run-1", {
+        id: "run-1",
+        canonicalRoot: "/repo",
+        objective: "Keep going until stopped.",
+        status: "enabled",
+        autoResumeAfterRestart: false,
+        concurrency: 4,
+        maxRetriesPerWorkItem: 3,
+        pollIntervalMs: 30_000,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+    })
+    const afterWrite = driver.persistCount
+    const read = driver.read((state) => state.runs.get("run-1")?.objective)
+    expect(read).toBe("Keep going until stopped.")
+    expect(driver.persistCount).toBe(afterWrite)
+    driver.close()
+
+    const store = AutopilotStore.sqlite(path)
+    const run = store.createRun({
+      canonicalRoot: "/other",
+      objective: "Second run.",
+    })
+    expect(store.getRun(run.id)?.objective).toBe("Second run.")
+    store.close()
+    const reopened = AutopilotStore.sqlite(path)
+    expect(reopened.getRun(run.id)?.objective).toBe("Second run.")
+    reopened.close()
   })
 })

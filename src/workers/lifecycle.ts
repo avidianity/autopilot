@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process"
+import { resolve } from "node:path"
+
 import type { AutopilotStore } from "../core/store.js"
 import type { WorkItemRecord } from "../core/types.js"
 import type { WorkerInstruction } from "../planning/types.js"
@@ -8,6 +11,21 @@ const READY_DEPENDENCY_STATUS = "completed"
 
 export interface WorktreePort {
   reserve(path: string, branch: string): Promise<void>
+}
+
+export class GitWorktreePort implements WorktreePort {
+  constructor(private readonly root: string) {}
+
+  async reserve(path: string, branch: string): Promise<void> {
+    const absolute = resolve(this.root, path)
+    const result = spawnSync("git", ["worktree", "add", "-b", branch, absolute], {
+      cwd: this.root,
+      encoding: "utf8",
+    })
+    if (result.status !== 0) {
+      throw new Error(result.stderr || "git worktree add failed")
+    }
+  }
 }
 
 export class InMemoryWorktreePort implements WorktreePort {
@@ -28,7 +46,7 @@ export class WorkerLifecycle {
   async fillSlots(input: {
     runId: string
     fencingToken: number
-    instructionFor: (item: WorkItemRecord) => WorkerInstruction
+    instructionFor: (item: WorkItemRecord) => WorkerInstruction | Promise<WorkerInstruction>
     fileScopes?: ReadonlyMap<string, string[]>
     gitAvailable?: boolean
   }): Promise<void> {
@@ -82,7 +100,7 @@ export class WorkerLifecycle {
         tx.attachSession(attempt.id, session.id)
         tx.transitionWorkItem(item.id, "running", "session attached")
       })
-      await this.runner.prompt(session.id, input.instructionFor(item))
+      await this.runner.prompt(session.id, await input.instructionFor(item))
       for (const file of scope) {
         activeFiles.add(file)
       }

@@ -15,6 +15,7 @@ import type {
 } from "./types.js"
 
 export class SqliteDriver {
+  persistCount = 0
   private db: Database
 
   constructor(private readonly path: string) {
@@ -24,12 +25,25 @@ export class SqliteDriver {
     this.db = this.open()
   }
 
+  read<T>(fn: (state: State) => T): T {
+    this.db.exec("BEGIN DEFERRED")
+    try {
+      const result = fn(loadState(this.db))
+      this.db.exec("COMMIT")
+      return result
+    } catch (error) {
+      this.db.exec("ROLLBACK")
+      throw error
+    }
+  }
+
   transact<T>(fn: (state: State) => T): T {
     this.db.exec("BEGIN IMMEDIATE")
     try {
       const state = cloneState(loadState(this.db))
       const result = fn(state)
       persistState(this.db, state)
+      this.persistCount += 1
       this.db.exec("COMMIT")
       return result
     } catch (error) {
@@ -55,6 +69,13 @@ export class SqliteDriver {
     initializeSchema(db)
     if (this.path !== ":memory:") {
       chmodSync(this.path, 0o600)
+      for (const sidecar of [`${this.path}-wal`, `${this.path}-shm`]) {
+        try {
+          chmodSync(sidecar, 0o600)
+        } catch {
+          // sidecar may not exist yet
+        }
+      }
     }
     return db
   }

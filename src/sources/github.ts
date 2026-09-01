@@ -18,7 +18,15 @@ export class GitHubIssueSource implements WorkSourceAdapter {
     if (result.code !== 0) {
       return []
     }
-    const issues = JSON.parse(result.stdout) as Array<{ number: number; title: string; body?: string }>
+    let issues: Array<{ number: number; title: string; body?: string }>
+    try {
+      issues = JSON.parse(result.stdout) as Array<{ number: number; title: string; body?: string }>
+    } catch {
+      return []
+    }
+    if (!Array.isArray(issues)) {
+      return []
+    }
     return issues.map((issue) => ({
       sourceId: this.id,
       sourceKey: `github:${issue.number}`,
