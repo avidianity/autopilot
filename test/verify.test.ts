@@ -176,6 +176,56 @@ describe("verification and integration", () => {
     expect(engine.repairPrompt(result)).toContain("Fix tests")
   })
 
+  test("integration-check failure reverts a successful cherry-pick off the Run Branch", async () => {
+    const { store, run, lease, item } = verifyingItem()
+    const git = new FakeGitPort()
+    const catalog = new VerificationCatalog()
+    catalog.freezePlan({
+      workItemId: item.id,
+      requireSemantic: false,
+      checks: [
+        {
+          id: "tests",
+          command: "bun",
+          args: ["test"],
+          timeoutMs: 1000,
+          cwd: "worktree",
+          expectedExitCode: 0,
+        },
+        {
+          id: "tests-integration",
+          command: "bun",
+          args: ["test"],
+          timeoutMs: 1000,
+          cwd: "integration",
+          expectedExitCode: 0,
+        },
+      ],
+    })
+    const process = new FakeProcessPort()
+    const original = process.run.bind(process)
+    process.run = async (input) => {
+      if (input.cwd === "/tmp/integration") {
+        return { code: 1, stdout: "failed", stderr: "error" }
+      }
+      return original(input)
+    }
+    const engine = new VerificationEngine(store, catalog, process, git)
+    const result = await engine.verifyAndIntegrate({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      workItemId: item.id,
+      worktree: "/tmp/work",
+      integrationCwd: "/tmp/integration",
+      baseRevision: "base",
+    })
+    expect(result.success).toBe(false)
+    expect(git.reverted).toBe(true)
+    expect(git.applied).toEqual([])
+    expect(git.headSha).toBe("base-sha")
+    expect(store.getWorkItem(item.id)?.status).not.toBe("completed")
+  })
+
   test("reverts integration conflicts and keeps the Work Item out of completed", async () => {
     const { store, run, lease, item } = verifyingItem()
     const git = new FakeGitPort()

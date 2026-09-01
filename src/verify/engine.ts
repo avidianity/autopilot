@@ -199,6 +199,7 @@ export class VerificationEngine {
       this.fail(input.runId, input.fencingToken, item, result, "integrating")
       return result
     }
+    const beforeSha = this.git.head(input.integrationCwd)
     try {
       this.git.cherryPick(commits, input.integrationCwd)
     } catch {
@@ -219,7 +220,7 @@ export class VerificationEngine {
       input.wholeRepositoryHealth === true,
     )
     if (!integrationResult.success) {
-      this.git.revertCherryPick(input.integrationCwd)
+      this.git.revertCherryPick(input.integrationCwd, beforeSha)
       this.fail(input.runId, input.fencingToken, item, integrationResult, "integrating")
       return integrationResult
     }

@@ -628,6 +628,63 @@ describe("Supervisor recovery and identity", () => {
     expect(supervisor.status()).toContain("Fix the failing authentication tests.")
   })
 
+  test("discoverEvidence failure does not abort the Supervisor tick", async () => {
+    const runner = new FakeSessionRunner()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: new ScriptedSemanticEngine({
+        "interpret-objective": () => {
+          throw new Error("discover failed")
+        },
+        "propose-plan": { operation: "propose-plan", items: [] },
+      }),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    supervisor.start("Keep going.")
+    await supervisor.tick()
+    expect(supervisor.status()).toContain("Keep going.")
+  })
+
+  test("force stop cancels repairing Work Items before marking stopped", async () => {
+    const store = AutopilotStore.memory()
+    const supervisor = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    supervisor.start("Keep going.")
+    const run = store.getActiveRun("/repo")
+    if (!run) {
+      throw new Error("missing Autopilot Run")
+    }
+    const lease = store.snapshot(run.id).lease
+    store.mutate(run.id, lease?.fencingToken ?? 0, (tx) => {
+      const item = tx.upsertWorkItem({
+        title: "Repair me",
+        objective: "Repair me",
+        sourceKey: "direct:repair",
+      })
+      tx.transitionWorkItem(item.id, "ready", "unblocked")
+      tx.transitionWorkItem(item.id, "launching", "schedule")
+      tx.transitionWorkItem(item.id, "running", "session attached")
+      tx.transitionWorkItem(item.id, "verifying", "idle")
+      tx.transitionWorkItem(item.id, "repairing", "checks failed")
+    })
+    const status = await supervisor.stop(true)
+    expect(status).toContain("stopped")
+    expect(store.snapshot(run.id).workItems.some((item) => item.status === "repairing")).toBe(false)
+  })
+
   test("force stop awaits Worker abort before draining", async () => {
     const runner = new FakeSessionRunner()
     const supervisor = new Supervisor({

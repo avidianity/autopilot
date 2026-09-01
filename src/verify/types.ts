@@ -33,7 +33,7 @@ export interface GitPort {
   head(cwd: string): string
   commitsSince(base: string, cwd: string): string[]
   cherryPick(commits: string[], cwd: string): void
-  revertCherryPick(cwd: string): void
+  revertCherryPick(cwd: string, toSha?: string): void
 }
 
 export interface VerificationCheckResult {

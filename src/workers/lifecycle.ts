@@ -162,7 +162,9 @@ export class WorkerLifecycle {
       })
       try {
         await this.runner.prompt(session.id, await input.instructionFor(item))
-      } catch {}
+      } catch {
+        void 0
+      }
       for (const file of scope) {
         activeFiles.add(file)
       }
@@ -184,8 +186,10 @@ export class WorkerLifecycle {
     }
     this.store.mutate(input.runId, input.fencingToken, (tx) => {
       const item = tx.getWorkItem(attempt.workItemId)
-      if (input.kind === "idle" && item.status === "running") {
-        tx.transitionWorkItem(item.id, "verifying", "session idle")
+      if (input.kind === "idle") {
+        if (item.status === "running") {
+          tx.transitionWorkItem(item.id, "verifying", "session idle")
+        }
         return
       }
       if (item.status === "running" || item.status === "launching" || item.status === "verifying") {

@@ -131,11 +131,11 @@ export class Supervisor {
     if (run.status === "stopped") {
       return this.status()
     }
-    this.ensureLoop()
     if (run.status === "recovery-hold" || run.status === "paused") {
       this.mutate((tx) => tx.setRunStatus("enabled", "resume"))
     }
     this.backoffMs = this.pollMs
+    this.kickLoop()
     return this.status()
   }
 
@@ -158,10 +158,18 @@ export class Supervisor {
           })
         }
       }
+      const afterAbort = this.deps.store.snapshot(this.requireRun().id)
+      this.mutate((tx) => {
+        for (const item of afterAbort.workItems) {
+          if (item.status === "repairing" || item.status === "unknown") {
+            tx.transitionWorkItem(item.id, "cancelled", "force stop")
+          }
+        }
+      })
     }
     const snapshot = this.deps.store.snapshot(this.requireRun().id)
     const active = snapshot.workItems.some((item) =>
-      ["launching", "running", "verifying", "integrating"].includes(item.status),
+      ["launching", "running", "verifying", "integrating", "repairing", "unknown"].includes(item.status),
     )
     if (!active) {
       this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
@@ -187,6 +195,17 @@ export class Supervisor {
   ensureLoop(): void {
     if (this.looping || this.disposed) {
       return
+    }
+    this.kickLoop()
+  }
+
+  private kickLoop(): void {
+    if (this.disposed) {
+      return
+    }
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
     }
     this.looping = true
     this.timer = setTimeout(() => {
@@ -261,7 +280,7 @@ export class Supervisor {
     if (current.status === "stopping" || current.status === "force-stopping") {
       const snapshot = this.deps.store.snapshot(run.id)
       const active = snapshot.workItems.some((item) =>
-        ["launching", "running", "verifying", "integrating"].includes(item.status),
+        ["launching", "running", "verifying", "integrating", "repairing", "unknown"].includes(item.status),
       )
       if (!active) {
         this.mutate((tx) => tx.setRunStatus("stopped", "drained"))
@@ -275,11 +294,16 @@ export class Supervisor {
         this.lifecycle.leaveUnknown(run.id, this.fencingToken, item.id)
       }
     }
-    const evidence = await discoverEvidence({
-      objective: current.objective,
-      engine: this.deps.engine,
-      registry: this.registry,
-    })
+    let evidence: Awaited<ReturnType<typeof discoverEvidence>> = []
+    try {
+      evidence = await discoverEvidence({
+        objective: current.objective,
+        engine: this.deps.engine,
+        registry: this.registry,
+      })
+    } catch {
+      evidence = []
+    }
     this.refreshLease(run.id)
     const snapshot = this.deps.store.snapshot(run.id)
     await applyPlanFromEngine({

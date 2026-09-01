@@ -160,6 +160,34 @@ describe("Worker lifecycle", () => {
     expect(store.getWorkItem(item.id)?.status).toBe("verifying")
   })
 
+  test("second session idle while verifying stays verifying", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    const sessionId = runner.created[0]?.id ?? ""
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId,
+      kind: "idle",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("verifying")
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId,
+      kind: "idle",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("verifying")
+  })
+
   test("aborts an active Worker session", async () => {
     const { store, run, lease, runner, lifecycle } = setup()
     const item = readyItem(store, run.id, lease.fencingToken, {

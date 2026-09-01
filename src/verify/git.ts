@@ -53,7 +53,17 @@ export class RealGitPort implements GitPort {
     }
   }
 
-  revertCherryPick(cwd: string): void {
+  revertCherryPick(cwd: string, toSha?: string): void {
+    if (toSha) {
+      const reset = spawnSync("git", ["reset", "--hard", toSha], {
+        cwd: this.cwd(cwd),
+        encoding: "utf8",
+      })
+      if (reset.status !== 0) {
+        throw new Error(reset.stderr || "reset --hard failed")
+      }
+      return
+    }
     spawnSync("git", ["cherry-pick", "--abort"], { cwd: this.cwd(cwd), encoding: "utf8" })
   }
 }
@@ -65,6 +75,8 @@ export class FakeGitPort implements GitPort {
   enabled = true
   lastRange: { base: string; cwd: string } | undefined
   headSha = "base-sha"
+  applied: string[] = []
+  private pickInProgress = false
 
   available(): boolean {
     return this.enabled
@@ -81,15 +93,27 @@ export class FakeGitPort implements GitPort {
   }
 
   cherryPick(commits: string[], cwd: string): void {
-    void commits
     void cwd
     if (this.cherryPickShouldFail) {
+      this.pickInProgress = true
       throw new Error("conflict")
     }
+    this.pickInProgress = false
+    this.applied = [...commits]
+    this.headSha = commits[commits.length - 1] ?? this.headSha
   }
 
-  revertCherryPick(cwd: string): void {
+  revertCherryPick(cwd: string, toSha?: string): void {
     void cwd
     this.reverted = true
+    if (toSha) {
+      this.headSha = toSha
+      this.applied = []
+      this.pickInProgress = false
+      return
+    }
+    if (this.pickInProgress) {
+      this.pickInProgress = false
+    }
   }
 }
