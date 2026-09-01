@@ -131,27 +131,35 @@ export class WorkerLifecycle {
         tx.transitionWorkItem(item.id, "launching", "schedule")
         return tx.beginWorkerAttempt({ workItemId: item.id, launchToken })
       })
-      if (input.gitAvailable !== false) {
-        const baseSha = await this.worktrees.ensure(path, branch, input.startPoint)
-        if (baseSha && !existing?.baseSha) {
-          this.store.mutate(input.runId, input.fencingToken, (tx) => {
-            tx.reserveWorktree(item.id, storedPath, branch, baseSha)
-          })
+      try {
+        if (input.gitAvailable !== false) {
+          const baseSha = await this.worktrees.ensure(path, branch, input.startPoint)
+          if (baseSha && !existing?.baseSha) {
+            this.store.mutate(input.runId, input.fencingToken, (tx) => {
+              tx.reserveWorktree(item.id, storedPath, branch, baseSha)
+            })
+          }
         }
+        const session = await this.runner.create({
+          title: encodeLaunchTitle({
+            runId: input.runId,
+            workItemId: item.id,
+            launchToken,
+          }),
+          ...(input.gitAvailable === false ? {} : { workingDirectory: path }),
+        })
+        this.store.mutate(input.runId, input.fencingToken, (tx) => {
+          tx.attachSession(attempt.id, session.id)
+          tx.transitionWorkItem(item.id, "running", "session attached")
+        })
+        await this.runner.prompt(session.id, await input.instructionFor(item))
+      } catch {
+        this.store.mutate(input.runId, input.fencingToken, (tx) => {
+          tx.recordUnknown(item.id, attempt.id, "launch failed")
+        })
+        this.leaveUnknown(input.runId, input.fencingToken, item.id)
+        continue
       }
-      const session = await this.runner.create({
-        title: encodeLaunchTitle({
-          runId: input.runId,
-          workItemId: item.id,
-          launchToken,
-        }),
-        ...(input.gitAvailable === false ? {} : { workingDirectory: path }),
-      })
-      this.store.mutate(input.runId, input.fencingToken, (tx) => {
-        tx.attachSession(attempt.id, session.id)
-        tx.transitionWorkItem(item.id, "running", "session attached")
-      })
-      await this.runner.prompt(session.id, await input.instructionFor(item))
       for (const file of scope) {
         activeFiles.add(file)
       }

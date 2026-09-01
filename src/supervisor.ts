@@ -55,7 +55,7 @@ export class Supervisor {
 
   constructor(private readonly deps: SupervisorDeps) {
     this.instanceId = deps.instanceId ?? crypto.randomUUID()
-    this.leaseTtlMs = deps.leaseTtlMs ?? 60_000
+    this.leaseTtlMs = deps.leaseTtlMs ?? 300_000
     this.maxBackoffMs = Math.max(1_000, this.leaseTtlMs - 15_000)
     this.capabilities =
       deps.capabilities ??
@@ -132,14 +132,14 @@ export class Supervisor {
     return this.status()
   }
 
-  stop(force = false): string {
+  async stop(force = false): Promise<string> {
     this.ensureLoop()
     this.mutate((tx) => tx.setRunStatus(force ? "force-stopping" : "stopping", "stop"))
     if (force) {
       const snapshot = this.deps.store.snapshot(this.requireRun().id)
       for (const attempt of snapshot.attempts) {
         if (attempt.sessionId && (attempt.status === "running" || attempt.status === "launching")) {
-          void this.lifecycle.abortSession({
+          await this.lifecycle.abortSession({
             runId: snapshot.run.id,
             fencingToken: this.fencingToken,
             sessionId: attempt.sessionId,
@@ -191,14 +191,27 @@ export class Supervisor {
     if (!run) {
       return
     }
-    this.lifecycle.handleSessionEvent({
-      runId: run.id,
-      fencingToken: this.fencingToken,
-      sessionId,
-      kind,
-    })
-    this.backoffMs = this.pollMs
-    void this.safeTick()
+    this.runId = run.id
+    if (this.fencingToken === 0) {
+      try {
+        const lease = this.deps.store.acquireLease(run.id, this.instanceId, this.leaseTtlMs)
+        this.fencingToken = lease.fencingToken
+      } catch {
+        return
+      }
+    }
+    try {
+      this.lifecycle.handleSessionEvent({
+        runId: run.id,
+        fencingToken: this.fencingToken,
+        sessionId,
+        kind,
+      })
+      this.backoffMs = this.pollMs
+      void this.safeTick()
+    } catch {
+      return
+    }
   }
 
   async tick(): Promise<void> {
@@ -227,17 +240,7 @@ export class Supervisor {
     }
     this.runId = run.id
     this.pollMs = run.pollIntervalMs
-    try {
-      const lease = this.deps.store.renewLease(run.id, this.instanceId, this.fencingToken, this.leaseTtlMs)
-      this.fencingToken = lease.fencingToken
-    } catch (error) {
-      if (error instanceof StaleLeaseError) {
-        const lease = this.deps.store.acquireLease(run.id, this.instanceId, this.leaseTtlMs)
-        this.fencingToken = lease.fencingToken
-      } else {
-        throw error
-      }
-    }
+    this.refreshLease(run.id)
     this.applyRecoveryHold(run)
     const current = this.deps.store.getRun(run.id) ?? run
     if (current.status === "paused" || current.status === "recovery-hold" || current.status === "stopped") {
@@ -265,6 +268,7 @@ export class Supervisor {
       engine: this.deps.engine,
       registry: this.registry,
     })
+    this.refreshLease(run.id)
     const snapshot = this.deps.store.snapshot(run.id)
     await applyPlanFromEngine({
       store: this.deps.store,
@@ -278,19 +282,21 @@ export class Supervisor {
         status: item.status,
       })),
     })
+    this.refreshLease(run.id)
     const next = this.deps.store.snapshot(run.id)
     const integrationPath = resolveUnderRoot(this.deps.canonicalRoot, `.autopilot/runs/${run.id}`)
     const integrationBranch = `autopilot/${run.id}`
     if (this.deps.gitAvailable !== false) {
       await this.deps.worktrees.ensure(integrationPath, integrationBranch)
     }
+    this.refreshLease(run.id)
     for (const item of next.workItems.filter((entry) => entry.status === "verifying")) {
       const tree = next.worktrees.find((entry) => entry.workItemId === item.id)
       const worktree = resolveUnderRoot(
         this.deps.canonicalRoot,
         tree?.path ?? `.autopilot/worktrees/${item.id}`,
       )
-      const baseRevision = tree?.baseSha ?? this.deps.git.head(worktree)
+      const baseRevision = tree?.baseSha ?? ""
       await this.verification.verifyAndIntegrate({
         runId: run.id,
         fencingToken: this.fencingToken,
@@ -305,6 +311,7 @@ export class Supervisor {
       runId: run.id,
       fencingToken: this.fencingToken,
     })
+    this.refreshLease(run.id)
     await this.lifecycle.fillSlots({
       runId: run.id,
       fencingToken: this.fencingToken,
@@ -399,7 +406,8 @@ export class Supervisor {
   }
 
   private async loopOnce(): Promise<void> {
-    if (this.disposed) {
+    this.timer = undefined
+    if (this.disposed || !this.looping) {
       this.looping = false
       return
     }
@@ -413,7 +421,7 @@ export class Supervisor {
         this.backoffMs = this.pollMs
       }
       this.lastSignature = after
-      if (this.disposed) {
+      if (this.disposed || !this.looping) {
         this.looping = false
         return
       }
@@ -422,13 +430,30 @@ export class Supervisor {
       this.lastTickError = error instanceof Error ? error.message : String(error)
       this.deps.onTickError?.(error)
     }
-    if (this.disposed) {
+    if (this.disposed || !this.looping) {
       this.looping = false
+      return
+    }
+    if (this.timer) {
       return
     }
     this.timer = setTimeout(() => {
       void this.loopOnce()
     }, this.backoffMs)
+  }
+
+  private refreshLease(runId: string): void {
+    try {
+      const lease = this.deps.store.renewLease(runId, this.instanceId, this.fencingToken, this.leaseTtlMs)
+      this.fencingToken = lease.fencingToken
+    } catch (error) {
+      if (error instanceof StaleLeaseError) {
+        const lease = this.deps.store.acquireLease(runId, this.instanceId, this.leaseTtlMs)
+        this.fencingToken = lease.fencingToken
+      } else {
+        throw error
+      }
+    }
   }
 
   private holdLease(): void {
@@ -437,17 +462,9 @@ export class Supervisor {
       return
     }
     try {
-      const lease = this.deps.store.renewLease(active.id, this.instanceId, this.fencingToken, this.leaseTtlMs)
-      this.fencingToken = lease.fencingToken
+      this.refreshLease(active.id)
     } catch (error) {
-      if (error instanceof StaleLeaseError) {
-        try {
-          const lease = this.deps.store.acquireLease(active.id, this.instanceId, this.leaseTtlMs)
-          this.fencingToken = lease.fencingToken
-        } catch (acquireError) {
-          this.lastTickError = acquireError instanceof Error ? acquireError.message : String(acquireError)
-        }
-      }
+      this.lastTickError = error instanceof Error ? error.message : String(error)
     }
   }
 

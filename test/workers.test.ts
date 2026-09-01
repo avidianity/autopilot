@@ -353,4 +353,26 @@ describe("Worker lifecycle", () => {
     expect(runner.createCalls).toBe(1)
     expect(store.snapshot(run.id).worktrees[0]?.path).toBe(storedPath)
   })
+
+  test("launch failure does not leave a Work Item launching", async () => {
+    const { store, run, lease, runner } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    const worktrees = {
+      ensure: async () => {
+        throw new Error("worktree failed")
+      },
+    }
+    const failing = new WorkerLifecycle(store, runner, worktrees)
+    await failing.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    const status = store.getWorkItem(item.id)?.status
+    expect(status).not.toBe("launching")
+    expect(status === "repairing" || status === "stuck").toBe(true)
+  })
 })

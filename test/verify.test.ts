@@ -62,6 +62,24 @@ describe("verification and integration", () => {
     expect(git.lastRange).toEqual({ base: "abcdef", cwd: "/tmp/work" })
   })
 
+  test("missing base SHA fails with repair instead of an empty commit range", async () => {
+    const { store, run, lease, item } = verifyingItem()
+    const git = new FakeGitPort()
+    git.headSha = "post-commit-head"
+    const engine = new VerificationEngine(store, new VerificationCatalog(), new FakeProcessPort(), git)
+    const result = await engine.verifyAndIntegrate({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      workItemId: item.id,
+      worktree: "/tmp/work",
+      integrationCwd: "/tmp/integration",
+      baseRevision: "",
+    })
+    expect(result.success).toBe(false)
+    expect(result.reason).toMatch(/missing base SHA/i)
+    expect(git.lastRange).toBeUndefined()
+  })
+
   test("persists the Verification Catalog next to sqlite", () => {
     const path = `/tmp/autopilot-catalog-${crypto.randomUUID()}.json`
     const first = new VerificationCatalog(path)

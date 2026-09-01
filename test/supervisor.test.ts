@@ -56,7 +56,7 @@ describe("Supervisor control", () => {
     const { supervisor } = createSupervisor()
     supervisor.start("Keep the repository healthy.")
     expect(supervisor.status()).toContain("Keep the repository healthy.")
-    supervisor.stop()
+    await supervisor.stop()
     expect(supervisor.status()).toContain("stopped")
     await supervisor.tick()
     expect(supervisor.status()).toContain("stopped")
@@ -77,7 +77,7 @@ describe("Supervisor control", () => {
     })
     try {
       supervisor.start("Keep going.")
-      expect(supervisor.stop()).toContain("stopped")
+      expect(await supervisor.stop()).toContain("stopped")
       expect(supervisor.status()).toContain("stopped")
     } finally {
       supervisor.dispose()
@@ -105,6 +105,7 @@ describe("Supervisor control", () => {
       canonicalRoot: "/repo",
       gitAvailable: false,
       instanceId: "first",
+      leaseTtlMs: 60_000,
     })
     first.start("Fix the failing authentication tests.")
     now += 120_000
@@ -119,6 +120,7 @@ describe("Supervisor control", () => {
       canonicalRoot: "/repo",
       gitAvailable: false,
       instanceId: "second",
+      leaseTtlMs: 60_000,
     })
     second.start("Fix the failing authentication tests.")
     expect(second.status()).toContain("recovery-hold")
@@ -143,7 +145,7 @@ describe("Supervisor control", () => {
       pollIntervalMs: 20,
     })
     supervisor.start("Keep going.")
-    supervisor.stop()
+    await supervisor.stop()
     expect(supervisor.status()).toContain("stopped")
     const before = runner.createCalls
     supervisor.start("Fix the failing authentication tests.")
@@ -277,6 +279,7 @@ describe("Supervisor recovery and identity", () => {
       canonicalRoot: "/repo",
       gitAvailable: false,
       instanceId: "first",
+      leaseTtlMs: 60_000,
     })
     first.start("Keep the repository healthy.")
     now += 120_000
@@ -291,6 +294,7 @@ describe("Supervisor recovery and identity", () => {
       canonicalRoot: "/repo",
       gitAvailable: false,
       instanceId: "second",
+      leaseTtlMs: 60_000,
     })
     second.start("Keep the repository healthy.")
     expect(second.status()).toContain("recovery-hold")
@@ -443,5 +447,142 @@ describe("Supervisor recovery and identity", () => {
     now += 90_000
     await supervisor.tick()
     expect(store.snapshot(store.getActiveRun("/repo")?.id ?? "").lease?.instanceId).toBe("owner")
+  })
+
+  test("stop during an in-flight tick does not reschedule the Supervisor loop", async () => {
+    let release: (() => void) | undefined
+    let interprets = 0
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: new ScriptedSemanticEngine({
+        "interpret-objective": async () => {
+          interprets += 1
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          return {
+            operation: "interpret-objective",
+            sources: [{ id: "direct-objective", rank: 1, reason: "direct", hints: {} }],
+          }
+        },
+        "propose-plan": { operation: "propose-plan", items: [] },
+      }),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      pollIntervalMs: 20,
+    })
+    supervisor.start("Keep the repository healthy.")
+    while (!release) {
+      await Bun.sleep(1)
+    }
+    await supervisor.stop()
+    release()
+    await Bun.sleep(80)
+    supervisor.dispose()
+    expect(interprets).toBe(1)
+  })
+
+  test("session idle with fencingToken 0 acquires a Supervisor Lease", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const run = store.createRun({
+      canonicalRoot: "/repo",
+      objective: "Keep going.",
+    })
+    const seed = store.acquireLease(run.id, "seeder", 60_000)
+    store.mutate(run.id, seed.fencingToken, (tx) => {
+      const item = tx.upsertWorkItem({
+        title: "Add pagination",
+        objective: "Add pagination",
+        sourceKey: "github:231",
+      })
+      tx.transitionWorkItem(item.id, "ready", "unblocked")
+      tx.transitionWorkItem(item.id, "launching", "schedule")
+      const attempt = tx.beginWorkerAttempt({ workItemId: item.id, launchToken: "launch-1" })
+      tx.attachSession(attempt.id, "ses_idle")
+      tx.transitionWorkItem(item.id, "running", "session attached")
+    })
+    now += 120_000
+    const supervisor = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "lazy",
+    })
+    supervisor.handleIdle("ses_idle")
+    await Bun.sleep(10)
+    const item = store.snapshot(run.id).workItems[0]
+    expect(item?.status).toBe("verifying")
+    expect(store.snapshot(run.id).lease?.instanceId).toBe("lazy")
+  })
+
+  test("renews the Supervisor Lease after discover before later mutations", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const supervisor = new Supervisor({
+      store,
+      engine: new ScriptedSemanticEngine({
+        "interpret-objective": () => {
+          now += 90_000
+          return {
+            operation: "interpret-objective",
+            sources: [{ id: "direct-objective", rank: 1, reason: "direct", hints: {} }],
+          }
+        },
+        "propose-plan": (request) => ({
+          operation: "propose-plan",
+          items:
+            request.operation === "propose-plan"
+              ? request.evidence.map((entry) => ({
+                  sourceKey: entry.sourceKey,
+                  title: entry.title,
+                  objective: entry.body || entry.title,
+                  dependencies: [],
+                }))
+              : [],
+        }),
+      }),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "owner",
+      leaseTtlMs: 60_000,
+    })
+    supervisor.start("Fix the failing authentication tests.")
+    await supervisor.tick()
+    expect(store.snapshot(store.getActiveRun("/repo")?.id ?? "").lease?.instanceId).toBe("owner")
+    expect(supervisor.status()).toContain("Fix the failing authentication tests.")
+  })
+
+  test("force stop awaits Worker abort before draining", async () => {
+    const runner = new FakeSessionRunner()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    supervisor.start("Fix the failing authentication tests.")
+    await supervisor.tick()
+    expect(runner.createCalls).toBeGreaterThan(0)
+    const status = await supervisor.stop(true)
+    expect(runner.aborted.length).toBeGreaterThan(0)
+    expect(status).toContain("stopped")
   })
 })

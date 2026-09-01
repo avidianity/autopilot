@@ -175,6 +175,16 @@ export class VerificationEngine {
       })
       return worktreeResult
     }
+    if (!input.baseRevision) {
+      const result: VerificationResult = {
+        success: false,
+        checks: worktreeResult.checks,
+        reason: "missing base SHA",
+        suggestedRepair: "Persist the Work Item worktree base SHA before verification.",
+      }
+      this.fail(input.runId, input.fencingToken, item, result)
+      return result
+    }
     this.store.mutate(input.runId, input.fencingToken, (tx) => {
       tx.transitionWorkItem(item.id, "integrating", "checks passed")
     })
