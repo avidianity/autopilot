@@ -64,10 +64,13 @@ export function unblockReadyWorkItems(input: {
   return input.store.mutate(input.runId, input.fencingToken, (tx) => {
     const released: WorkItemRecord[] = []
     for (const item of items) {
-      if (item.status !== "blocked" || item.dependencies.length === 0) {
+      if (item.status !== "blocked") {
         continue
       }
-      if (!dependenciesCompleted(item, items)) {
+      if (item.sourceKey === "diagnostic:semantic-plan") {
+        continue
+      }
+      if (item.dependencies.length > 0 && !dependenciesCompleted(item, items)) {
         continue
       }
       released.push(tx.transitionWorkItem(item.id, "ready", "dependencies completed"))

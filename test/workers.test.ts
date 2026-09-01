@@ -199,6 +199,59 @@ describe("Worker lifecycle", () => {
     expect(runner.createCalls).toBe(1)
   })
 
+  test("session error fails a verifying Work Item", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "idle",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("verifying")
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "error",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("repairing")
+  })
+
+  test("session abort fails a verifying Work Item", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "idle",
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "abort",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("repairing")
+  })
+
   test("session error records unknown via the idle path", async () => {
     const { store, run, lease, runner, lifecycle } = setup()
     const item = readyItem(store, run.id, lease.fencingToken, {

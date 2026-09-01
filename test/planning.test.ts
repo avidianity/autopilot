@@ -193,6 +193,63 @@ describe("plan reconciliation", () => {
     expect(store.snapshot(run.id).workItems).toHaveLength(1)
   })
 
+  test("blocked Work Items with empty dependencies become ready", () => {
+    const { store, run, lease } = openRun()
+    applyPlan({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      proposal: {
+        operation: "propose-plan",
+        items: [
+          {
+            sourceKey: "orphan-blocked",
+            title: "Orphan",
+            objective: "Should unblock.",
+            dependencies: [],
+            blocked: true,
+            blockedReason: "stale block",
+          },
+        ],
+      },
+    })
+    expect(store.snapshot(run.id).workItems[0]?.status).toBe("blocked")
+    unblockReadyWorkItems({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+    })
+    expect(store.snapshot(run.id).workItems[0]?.status).toBe("ready")
+  })
+
+  test("diagnostic semantic-plan Work Items stay blocked", () => {
+    const { store, run, lease } = openRun()
+    applyPlan({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      proposal: {
+        operation: "propose-plan",
+        items: [
+          {
+            sourceKey: "diagnostic:semantic-plan",
+            title: "Clarify Autopilot Objective",
+            objective: "Semantic planning failed validation. Supervisor remains enabled.",
+            dependencies: [],
+            blocked: true,
+            blockedReason: "invalid semantic output",
+          },
+        ],
+      },
+    })
+    unblockReadyWorkItems({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+    })
+    expect(store.snapshot(run.id).workItems[0]?.status).toBe("blocked")
+  })
+
   test("blocked Work Items become ready when every dependency is completed", () => {
     const { store, run, lease } = openRun()
     applyPlan({

@@ -81,8 +81,10 @@ export class FakeSessionRunner implements SessionRunner {
   readonly aborted: string[] = []
   createCalls = 0
   onCreate?: () => void
+  beforeCreate?: () => Promise<void>
 
   async create(input: { title: string; workingDirectory?: string }): Promise<RunnerSession> {
+    await this.beforeCreate?.()
     this.createCalls += 1
     this.onCreate?.()
     const session = { id: `ses_${this.createCalls}`, title: input.title }

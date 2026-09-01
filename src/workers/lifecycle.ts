@@ -177,7 +177,7 @@ export class WorkerLifecycle {
         tx.transitionWorkItem(item.id, "verifying", "session idle")
         return
       }
-      if (item.status === "running" || item.status === "launching") {
+      if (item.status === "running" || item.status === "launching" || item.status === "verifying") {
         tx.recordUnknown(item.id, attempt.id, `session ${input.kind}`)
       }
     })

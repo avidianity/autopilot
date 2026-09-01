@@ -92,6 +92,95 @@ describe("Supervisor control", () => {
     expect(supervisor.status()).toContain("first")
   })
 
+  test("resume after Recovery Hold stays enabled on the next tick", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const first = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "first",
+    })
+    first.start("Fix the failing authentication tests.")
+    now += 120_000
+    const runner = new FakeSessionRunner()
+    const second = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "second",
+    })
+    second.start("Fix the failing authentication tests.")
+    expect(second.status()).toContain("recovery-hold")
+    second.resume()
+    expect(second.status()).toContain("idle")
+    await second.tick()
+    expect(second.status()).not.toContain("recovery-hold")
+    expect(runner.createCalls).toBeGreaterThan(0)
+  })
+
+  test("stop then start on the same Supervisor instance ticks again", async () => {
+    const runner = new FakeSessionRunner()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      pollIntervalMs: 20,
+    })
+    supervisor.start("Keep going.")
+    supervisor.stop()
+    expect(supervisor.status()).toContain("stopped")
+    const before = runner.createCalls
+    supervisor.start("Fix the failing authentication tests.")
+    supervisor.ensureLoop()
+    await Bun.sleep(60)
+    supervisor.dispose()
+    expect(runner.createCalls).toBeGreaterThan(before)
+  })
+
+  test("overlapping ticks do not double-create sessions for one Work Item", async () => {
+    const runner = new FakeSessionRunner()
+    let releaseCreate: (() => void) | undefined
+    runner.beforeCreate = () =>
+      new Promise<void>((resolve) => {
+        releaseCreate = resolve
+      })
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+    })
+    supervisor.start("Fix the failing authentication tests.")
+    const first = supervisor.tick()
+    while (!releaseCreate) {
+      await Bun.sleep(1)
+    }
+    const second = supervisor.tick()
+    releaseCreate()
+    await Promise.all([first, second])
+    expect(runner.createCalls).toBe(1)
+  })
+
   test("pause stops scheduling and resume continues", async () => {
     const { supervisor, runner } = createSupervisor()
     supervisor.start("Fix the failing authentication tests.")

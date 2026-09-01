@@ -41,8 +41,11 @@ export class Supervisor {
   private fencingToken = 0
   private pollMs = 30_000
   private createdThisProcess = false
+  private recoveryHoldAppliedThisProcess = false
   private looping = false
   private disposed = false
+  private tickInFlight: Promise<void> | undefined
+  private tickQueued = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private backoffMs = 30_000
   private lastSignature = ""
@@ -156,12 +159,12 @@ export class Supervisor {
   }
 
   dispose(): void {
+    this.disposed = true
     this.stopLoop()
     this.deps.store.close()
   }
 
   private stopLoop(): void {
-    this.disposed = true
     this.looping = false
     if (this.timer) {
       clearTimeout(this.timer)
@@ -199,6 +202,25 @@ export class Supervisor {
   }
 
   async tick(): Promise<void> {
+    if (this.tickInFlight) {
+      this.tickQueued = true
+      await this.tickInFlight
+      return
+    }
+    const running = this.performTick()
+    this.tickInFlight = running
+    try {
+      await running
+    } finally {
+      this.tickInFlight = undefined
+      if (this.tickQueued) {
+        this.tickQueued = false
+        await this.tick()
+      }
+    }
+  }
+
+  private async performTick(): Promise<void> {
     const run = this.deps.store.getActiveRun(this.deps.canonicalRoot)
     if (!run) {
       return
@@ -357,11 +379,12 @@ export class Supervisor {
   }
 
   private applyRecoveryHold(run: { id: string; status: string; autoResumeAfterRestart: boolean }): void {
-    if (this.createdThisProcess) {
+    if (this.createdThisProcess || this.recoveryHoldAppliedThisProcess) {
       return
     }
     if (run.status === "enabled" && run.autoResumeAfterRestart === false) {
       this.mutate((tx) => tx.setRunStatus("recovery-hold", "restart"))
+      this.recoveryHoldAppliedThisProcess = true
     }
   }
 
