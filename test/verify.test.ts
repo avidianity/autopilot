@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import { AutopilotStore } from "../src/core/store.js"
 import { ScriptedSemanticEngine } from "../src/planning/scripted-engine.js"
-import { VerificationCatalog, VerificationEngine } from "../src/verify/engine.js"
+import { createDefaultPlan, VerificationCatalog, VerificationEngine } from "../src/verify/engine.js"
 import { FakeGitPort } from "../src/verify/git.js"
 import { FakeProcessPort } from "../src/verify/process.js"
 
@@ -31,6 +31,58 @@ function verifyingItem() {
 }
 
 describe("verification and integration", () => {
+  test("default Verification Plan includes integration-cwd checks", () => {
+    const plan = createDefaultPlan({
+      id: "w1",
+      runId: "r1",
+      title: "Fix tests",
+      objective: "Fix tests",
+      status: "verifying",
+      dependencies: [],
+      failedAttempts: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    expect(plan.checks.some((check) => check.cwd === "integration")).toBe(true)
+    expect(plan.checks.some((check) => check.cwd === "worktree")).toBe(true)
+  })
+
+  test("commitsSince uses the persisted worktree base SHA, not HEAD..HEAD", async () => {
+    const { store, run, lease, item } = verifyingItem()
+    const git = new FakeGitPort()
+    const engine = new VerificationEngine(store, new VerificationCatalog(), new FakeProcessPort(), git)
+    await engine.verifyAndIntegrate({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      workItemId: item.id,
+      worktree: "/tmp/work",
+      integrationCwd: "/tmp/integration",
+      baseRevision: "abcdef",
+    })
+    expect(git.lastRange).toEqual({ base: "abcdef", cwd: "/tmp/work" })
+  })
+
+  test("persists the Verification Catalog next to sqlite", () => {
+    const path = `/tmp/autopilot-catalog-${crypto.randomUUID()}.json`
+    const first = new VerificationCatalog(path)
+    first.freezePlan({
+      workItemId: "w1",
+      requireSemantic: false,
+      checks: [
+        {
+          id: "tests",
+          command: "bun",
+          args: ["test"],
+          timeoutMs: 1000,
+          cwd: "worktree",
+          expectedExitCode: 0,
+        },
+      ],
+    })
+    const second = new VerificationCatalog(path)
+    expect(second.get("w1")?.checks[0]?.id).toBe("tests")
+  })
+
   test("completes after passing worktree checks, Worker commits, and integration", async () => {
     const { store, run, lease, item } = verifyingItem()
     const catalog = new VerificationCatalog()

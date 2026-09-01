@@ -20,6 +20,10 @@ export interface OpenCodeSessionClient {
       path: { id: string }
       body?: { parts: Array<{ type: "text"; text: string }> }
     }): Promise<unknown>
+    command?(options: {
+      path: { id: string }
+      body?: { command: string }
+    }): Promise<unknown>
     abort(options: { path: { id: string } }): Promise<unknown>
     list(options?: { query?: { directory?: string } }): Promise<{
       data?: Array<{ id: string; title?: string }>
@@ -46,6 +50,13 @@ export class OpenCodeSessionRunner implements SessionRunner {
   }
 
   async prompt(sessionId: string, instruction: { command?: string; prompt?: string }): Promise<void> {
+    if (instruction.command && this.client.session.command) {
+      await this.client.session.command({
+        path: { id: sessionId },
+        body: { command: instruction.command },
+      })
+      return
+    }
     const text = instruction.command ?? instruction.prompt ?? ""
     await this.client.session.promptAsync({
       path: { id: sessionId },

@@ -12,7 +12,10 @@ const CHECKS = [
 export class RepositoryCheckSource implements WorkSourceAdapter {
   readonly id = "repository-checks"
 
-  constructor(private readonly process: ProcessPort) {}
+  constructor(
+    private readonly process: ProcessPort,
+    private readonly cwd = ".",
+  ) {}
 
   async discover(input: { objective: string; hints: Record<string, string> }): Promise<DiscoveryEvidence[]> {
     void input
@@ -21,7 +24,7 @@ export class RepositoryCheckSource implements WorkSourceAdapter {
       const result = await this.process.run({
         command: check.command,
         args: [...check.args],
-        cwd: ".",
+        cwd: this.cwd,
         timeoutMs: 120_000,
       })
       if (result.code === 0) {

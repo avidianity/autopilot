@@ -83,6 +83,8 @@ describe("Supervisor control", () => {
     expect(parseAutopilotInput("resume").action).toBe("resume")
     expect(parseAutopilotInput("stop").action).toBe("stop")
     expect(parseAutopilotInput("stop --force").force).toBe(true)
+    expect(parseAutopilotInput("stop now --force").force).toBe(true)
+    expect(parseAutopilotInput("stop now --force").action).toBe("stop")
     expect(parseAutopilotInput("Implement all issues").objective).toBe("Implement all issues")
   })
 })
@@ -100,6 +102,17 @@ describe("Work Sources", () => {
     const evidence = await source.discover({ objective: "Work through GitHub issues", hints: {} })
     expect(evidence[0]?.sourceKey).toBe("github:231")
     expect(evidence[0]?.title).toBe("Add pagination")
+  })
+
+  test("GitHub and repository checks use canonicalRoot as cwd", async () => {
+    const process = new FakeProcessPort()
+    process.setExit("gh", 1)
+    process.setExit("bun", 0)
+    const github = new GitHubIssueSource(process, "/repo")
+    const checks = new RepositoryCheckSource(process, "/repo")
+    await github.discover({ objective: "issues", hints: {} })
+    await checks.discover({ objective: "health", hints: {} })
+    expect(process.calls.every((call) => call.cwd === "/repo")).toBe(true)
   })
 
   test("markdown tasks, TODOs, explicit files, and failing checks emit evidence", async () => {
@@ -274,5 +287,27 @@ describe("Supervisor recovery and identity", () => {
     supervisor.start("Fix the failing authentication tests.")
     await supervisor.tick()
     expect(runner.prompted[0]?.instruction.prompt).toContain("Do not work on unrelated Work Items.")
+  })
+
+  test("renews or re-acquires the Supervisor Lease after a long backoff", async () => {
+    let now = 1_000
+    const store = AutopilotStore.memory({ clock: () => now })
+    const supervisor = new Supervisor({
+      store,
+      engine: engineForEvidence(),
+      runner: new FakeSessionRunner(),
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      instanceId: "owner",
+      leaseTtlMs: 60_000,
+    })
+    supervisor.start("Keep the repository healthy.")
+    await supervisor.tick()
+    now += 90_000
+    await supervisor.tick()
+    expect(store.snapshot(store.getActiveRun("/repo")?.id ?? "").lease?.instanceId).toBe("owner")
   })
 })

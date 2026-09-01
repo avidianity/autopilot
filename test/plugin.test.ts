@@ -18,6 +18,16 @@ describe("Autopilot plugin export", () => {
     await plugin.config?.(cfg as never)
     expect(cfg.command?.autopilot?.template).toContain("$ARGUMENTS")
   })
+
+  test("routes session.error through the Supervisor hook", async () => {
+    const plugin = await AutopilotPlugin({
+      client: { session: {} },
+      directory: "/repo-error-hook",
+    } as never)
+    await plugin.event?.({
+      event: { type: "session.error", properties: { sessionID: "ses_1" } },
+    } as never)
+  })
 })
 
 describe("path confinement", () => {

@@ -38,13 +38,20 @@ export class BunProcessPort implements ProcessPort {
       stdout: "pipe",
       stderr: "pipe",
     })
-    const timer = setTimeout(() => subprocess.kill(), input.timeoutMs)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      subprocess.kill()
+    }, input.timeoutMs)
     try {
       const [stdout, stderr, code] = await Promise.all([
         new Response(subprocess.stdout).text(),
         new Response(subprocess.stderr).text(),
         subprocess.exited,
       ])
+      if (timedOut) {
+        return { code: 124, stdout, stderr }
+      }
       return { code: code ?? 1, stdout, stderr }
     } finally {
       clearTimeout(timer)

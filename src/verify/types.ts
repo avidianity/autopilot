@@ -30,6 +30,7 @@ export interface ProcessPort {
 
 export interface GitPort {
   available(): boolean
+  head(cwd: string): string
   commitsSince(base: string, cwd: string): string[]
   cherryPick(commits: string[], cwd: string): void
   revertCherryPick(cwd: string): void

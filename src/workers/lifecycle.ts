@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { resolve } from "node:path"
 
@@ -10,29 +11,45 @@ const SLOT_STATUSES = new Set(["launching", "running"])
 const READY_DEPENDENCY_STATUS = "completed"
 
 export interface WorktreePort {
-  reserve(path: string, branch: string): Promise<void>
+  ensure(path: string, branch: string): Promise<string | undefined>
 }
 
 export class GitWorktreePort implements WorktreePort {
   constructor(private readonly root: string) {}
 
-  async reserve(path: string, branch: string): Promise<void> {
+  async ensure(path: string, branch: string): Promise<string | undefined> {
     const absolute = resolve(this.root, path)
-    const result = spawnSync("git", ["worktree", "add", "-b", branch, absolute], {
-      cwd: this.root,
+    if (!existsSync(absolute)) {
+      const result = spawnSync("git", ["worktree", "add", "-b", branch, absolute], {
+        cwd: this.root,
+        encoding: "utf8",
+      })
+      if (result.status !== 0) {
+        const retry = spawnSync("git", ["worktree", "add", absolute, branch], {
+          cwd: this.root,
+          encoding: "utf8",
+        })
+        if (retry.status !== 0) {
+          throw new Error(result.stderr || retry.stderr || "git worktree add failed")
+        }
+      }
+    }
+    const head = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: absolute,
       encoding: "utf8",
     })
-    if (result.status !== 0) {
-      throw new Error(result.stderr || "git worktree add failed")
-    }
+    return head.status === 0 ? head.stdout.trim() : undefined
   }
 }
 
 export class InMemoryWorktreePort implements WorktreePort {
   readonly reserved: Array<{ path: string; branch: string }> = []
 
-  async reserve(path: string, branch: string): Promise<void> {
-    this.reserved.push({ path, branch })
+  async ensure(path: string, branch: string): Promise<string | undefined> {
+    if (!this.reserved.some((entry) => entry.path === path && entry.branch === branch)) {
+      this.reserved.push({ path, branch })
+    }
+    return "base-sha"
   }
 }
 
@@ -78,15 +95,21 @@ export class WorkerLifecycle {
         continue
       }
       const launchToken = crypto.randomUUID()
-      const path = `.autopilot/worktrees/${item.id}`
-      const branch = `autopilot/${item.id}`
+      const existing = snapshot.worktrees.find((tree) => tree.workItemId === item.id)
+      const path = existing?.path ?? `.autopilot/worktrees/${item.id}`
+      const branch = existing?.branch ?? `autopilot/${item.id}`
       const attempt = this.store.mutate(input.runId, input.fencingToken, (tx) => {
-        tx.reserveWorktree(item.id, path, branch)
+        tx.reserveWorktree(item.id, path, branch, existing?.baseSha)
         tx.transitionWorkItem(item.id, "launching", "schedule")
         return tx.beginWorkerAttempt({ workItemId: item.id, launchToken })
       })
       if (input.gitAvailable !== false) {
-        await this.worktrees.reserve(path, branch)
+        const baseSha = await this.worktrees.ensure(path, branch)
+        if (baseSha && !existing?.baseSha) {
+          this.store.mutate(input.runId, input.fencingToken, (tx) => {
+            tx.reserveWorktree(item.id, path, branch, baseSha)
+          })
+        }
       }
       const session = await this.runner.create({
         title: encodeLaunchTitle({

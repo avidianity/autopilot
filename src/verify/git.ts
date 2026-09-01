@@ -13,8 +13,19 @@ export class RealGitPort implements GitPort {
     return result.status === 0 && result.stdout.trim() === "true"
   }
 
+  head(cwd: string): string {
+    const result = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+    })
+    return result.status === 0 ? result.stdout.trim() : ""
+  }
+
   commitsSince(base: string, cwd: string): string[] {
-    const result = spawnSync("git", ["log", "--format=%H", `${base}..HEAD`], {
+    if (!base || base === "HEAD") {
+      return []
+    }
+    const result = spawnSync("git", ["log", "--reverse", "--format=%H", `${base}..HEAD`], {
       cwd,
       encoding: "utf8",
     })
@@ -47,14 +58,20 @@ export class FakeGitPort implements GitPort {
   cherryPickShouldFail = false
   reverted = false
   enabled = true
+  lastRange: { base: string; cwd: string } | undefined
+  headSha = "base-sha"
 
   available(): boolean {
     return this.enabled
   }
 
-  commitsSince(base: string, cwd: string): string[] {
-    void base
+  head(cwd: string): string {
     void cwd
+    return this.headSha
+  }
+
+  commitsSince(base: string, cwd: string): string[] {
+    this.lastRange = { base, cwd }
     return [...this.commits]
   }
 

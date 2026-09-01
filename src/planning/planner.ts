@@ -33,11 +33,20 @@ export function applyPlan(input: {
         applied.push(existing)
         continue
       }
+      if (
+        existing?.status === "completed" &&
+        (item.contentFingerprint === undefined ||
+          item.contentFingerprint === existing.contentFingerprint)
+      ) {
+        applied.push(existing)
+        continue
+      }
       const record = tx.upsertWorkItem({
         title: item.title,
         objective: item.objective,
         sourceKey: item.sourceKey,
         dependencies: item.dependencies,
+        ...(item.contentFingerprint ? { contentFingerprint: item.contentFingerprint } : {}),
       })
       if (record.status === "pending") {
         if (item.blocked || item.dependencies.length > 0) {
@@ -77,11 +86,18 @@ export async function applyPlanFromEngine(input: {
     if (proposal.operation !== "propose-plan") {
       throw new SemanticValidationError("missing items")
     }
+    const fingerprints = new Map(input.evidence.map((entry) => [entry.sourceKey, entry.fingerprint]))
     return applyPlan({
       store: input.store,
       runId: input.runId,
       fencingToken: input.fencingToken,
-      proposal,
+      proposal: {
+        ...proposal,
+        items: proposal.items.map((item) => {
+          const fingerprint = item.contentFingerprint ?? fingerprints.get(item.sourceKey)
+          return fingerprint ? { ...item, contentFingerprint: fingerprint } : item
+        }),
+      },
     })
   } catch {
     return applyPlan({

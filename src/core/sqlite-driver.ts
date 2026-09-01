@@ -67,6 +67,11 @@ export class SqliteDriver {
     db.exec("PRAGMA foreign_keys = ON")
     db.exec("PRAGMA busy_timeout = 5000")
     initializeSchema(db)
+    try {
+      db.exec("ALTER TABLE worktrees ADD COLUMN base_sha TEXT")
+    } catch {
+      // column already exists
+    }
     if (this.path !== ":memory:") {
       chmodSync(this.path, 0o600)
       for (const sidecar of [`${this.path}-wal`, `${this.path}-shm`]) {
@@ -123,7 +128,8 @@ function initializeSchema(db: Database): void {
       work_item_id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
       path TEXT NOT NULL UNIQUE,
-      branch TEXT NOT NULL UNIQUE
+      branch TEXT NOT NULL UNIQUE,
+      base_sha TEXT
     );
     CREATE TABLE IF NOT EXISTS leases (
       run_id TEXT PRIMARY KEY,
@@ -208,6 +214,9 @@ function loadState(db: Database): State {
       runId: String(row.run_id),
       path: String(row.path),
       branch: String(row.branch),
+    }
+    if (typeof row.base_sha === "string") {
+      record.baseSha = row.base_sha
     }
     state.worktrees.set(record.workItemId, record)
   }
@@ -303,10 +312,10 @@ function persistState(db: Database, state: State): void {
   }
 
   const insertTree = db.prepare(`
-    INSERT INTO worktrees VALUES (?, ?, ?, ?)
+    INSERT INTO worktrees VALUES (?, ?, ?, ?, ?)
   `)
   for (const tree of state.worktrees.values()) {
-    insertTree.run(tree.workItemId, tree.runId, tree.path, tree.branch)
+    insertTree.run(tree.workItemId, tree.runId, tree.path, tree.branch, tree.baseSha ?? null)
   }
 
   const insertLease = db.prepare(`

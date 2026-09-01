@@ -43,7 +43,7 @@ export interface AutopilotMutation {
   upsertWorkItem(input: UpsertWorkItemInput): WorkItemRecord
   transitionWorkItem(id: string, to: WorkItemStatus, reason: string): WorkItemRecord
   incrementFailedAttempts(id: string, by: number): WorkItemRecord
-  reserveWorktree(workItemId: string, path: string, branch: string): void
+  reserveWorktree(workItemId: string, path: string, branch: string, baseSha?: string): void
   beginWorkerAttempt(input: BeginAttemptInput): WorkerAttemptRecord
   attachSession(attemptId: string, sessionId: string): WorkerAttemptRecord
   recordUnknown(workItemId: string, attemptId: string, reason: string): void
@@ -327,6 +327,11 @@ function createMutation(
         }
         const completed = matches.find((item) => item.status === "completed")
         if (completed) {
+          const previous = completed.contentFingerprint
+          const next = input.contentFingerprint
+          if (next === undefined || next === previous) {
+            return cloneWorkItem(completed)
+          }
           return createWorkItem(state, runId, input, now, fencingToken, completed.id)
         }
       }
@@ -356,8 +361,18 @@ function createMutation(
       item.updatedAt = clock()
       return cloneWorkItem(item)
     },
-    reserveWorktree(workItemId, path, branch) {
+    reserveWorktree(workItemId, path, branch, baseSha) {
       requireWorkItem(state, runId, workItemId)
+      const existing = state.worktrees.get(workItemId)
+      if (existing) {
+        if (existing.path !== path || existing.branch !== branch) {
+          throw new WorktreeCollisionError()
+        }
+        if (baseSha) {
+          existing.baseSha = baseSha
+        }
+        return
+      }
       for (const tree of state.worktrees.values()) {
         if (tree.path === path) {
           throw new WorktreeCollisionError()
@@ -366,7 +381,13 @@ function createMutation(
           throw new WorktreeCollisionError()
         }
       }
-      state.worktrees.set(workItemId, { workItemId, runId, path, branch })
+      state.worktrees.set(workItemId, {
+        workItemId,
+        runId,
+        path,
+        branch,
+        ...(baseSha ? { baseSha } : {}),
+      })
     },
     beginWorkerAttempt(input) {
       requireWorkItem(state, runId, input.workItemId)

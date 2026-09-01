@@ -174,4 +174,48 @@ describe("Worker lifecycle", () => {
     expect(store.getWorkItem(item.id)?.status).toBe("running")
     expect(store.findAttemptByLaunchToken(launchToken)?.sessionId).toBe("ses_recovered")
   })
+
+  test("repair relaunch reuses the existing worktree reservation", async () => {
+    const { store, run, lease, runner, worktrees, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    store.mutate(run.id, lease.fencingToken, (tx) => {
+      tx.reserveWorktree(item.id, `.autopilot/worktrees/${item.id}`, `autopilot/${item.id}`, "abc")
+      tx.transitionWorkItem(item.id, "launching", "schedule")
+      tx.transitionWorkItem(item.id, "running", "session attached")
+      tx.transitionWorkItem(item.id, "verifying", "idle")
+      tx.transitionWorkItem(item.id, "repairing", "checks failed")
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Repair pagination." }),
+    })
+    expect(worktrees.reserved).toHaveLength(1)
+    expect(worktrees.reserved[0]?.path).toBe(`.autopilot/worktrees/${item.id}`)
+    expect(store.snapshot(run.id).worktrees).toHaveLength(1)
+    expect(runner.createCalls).toBe(1)
+  })
+
+  test("session error records unknown via the idle path", async () => {
+    const { store, run, lease, runner, lifecycle } = setup()
+    const item = readyItem(store, run.id, lease.fencingToken, {
+      title: "Add pagination",
+      sourceKey: "github:231",
+    })
+    await lifecycle.fillSlots({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      instructionFor: () => ({ prompt: "Implement pagination." }),
+    })
+    lifecycle.handleSessionEvent({
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      sessionId: runner.created[0]?.id ?? "",
+      kind: "error",
+    })
+    expect(store.getWorkItem(item.id)?.status).toBe("unknown")
+  })
 })

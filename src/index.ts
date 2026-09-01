@@ -80,11 +80,12 @@ export function supervisorFor(root: string, client: OpenCodeSessionClient): Supe
     return existing
   }
   const files = new RootFilePort(root)
-  const process = new BunProcessPort()
-  const verify = new ConstrainedProcessPort(process, VERIFY_ALLOW)
+  const discovery = new BunProcessPort()
+  const verify = new ConstrainedProcessPort(new BunProcessPort(), VERIFY_ALLOW)
   const git = new RealGitPort(root)
+  const storePath = `${root}/.opencode/autopilot/state.sqlite`
   const created = new Supervisor({
-    store: AutopilotStore.sqlite(`${root}/.opencode/autopilot/state.sqlite`),
+    store: AutopilotStore.sqlite(storePath),
     engine: new FallbackSemanticEngine(completionPortFrom(client), scriptedFallbackEngine()),
     runner: new OpenCodeSessionRunner(client),
     worktrees: new GitWorktreePort(root),
@@ -92,9 +93,10 @@ export function supervisorFor(root: string, client: OpenCodeSessionClient): Supe
     git,
     canonicalRoot: root,
     gitAvailable: git.available(),
+    catalogPath: `${root}/.opencode/autopilot/verification.json`,
     sources: [
-      new GitHubIssueSource(process),
-      new RepositoryCheckSource(process),
+      new GitHubIssueSource(discovery, root),
+      new RepositoryCheckSource(discovery, root),
       new MarkdownTaskSource(files),
       new TodoSource(files),
       new ExplicitFileSource(files),
@@ -115,14 +117,26 @@ export const AutopilotPlugin = (async ({ client, directory }) => {
       ;(cfg as { command?: Record<string, { template: string; description?: string }> }).command = commands
     },
     event: async ({ event }) => {
-      if (event.type !== "session.idle") {
-        return
-      }
       const sessionId = (event.properties as { sessionID?: string }).sessionID
       if (!sessionId) {
         return
       }
-      supervisors.get(directory)?.handleIdle(sessionId)
+      const supervisor = supervisors.get(directory)
+      if (!supervisor) {
+        return
+      }
+      if (event.type === "session.idle") {
+        supervisor.handleIdle(sessionId)
+        return
+      }
+      if (event.type === "session.error") {
+        supervisor.handleSessionHook(sessionId, "error")
+      }
+    },
+    async dispose() {
+      const supervisor = supervisors.get(directory)
+      supervisor?.dispose()
+      supervisors.delete(directory)
     },
     tool: {
       autopilot: tool({
@@ -140,15 +154,12 @@ export const AutopilotPlugin = (async ({ client, directory }) => {
             return supervisor.pause()
           }
           if (parsed.action === "resume") {
-            supervisor.ensureLoop()
             return supervisor.resume()
           }
           if (parsed.action === "stop") {
             return supervisor.stop(parsed.force === true)
           }
-          const started = supervisor.start(parsed.objective ?? args.input)
-          supervisor.ensureLoop()
-          return started
+          return supervisor.start(parsed.objective ?? args.input)
         },
       }),
     },

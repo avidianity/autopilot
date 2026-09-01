@@ -25,6 +25,7 @@ export interface PlanItemProposal {
   title: string
   objective: string
   dependencies: string[]
+  contentFingerprint?: string
   blocked?: boolean
   blockedReason?: string
 }

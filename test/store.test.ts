@@ -207,6 +207,39 @@ function withStore(
       expect(store.getWorkItem(original.id)?.status).toBe("completed")
     })
 
+    test("does not create a successor when a completed fingerprint is unchanged", () => {
+      const run = open().createRun({
+        canonicalRoot: "/repo",
+        objective: "goal",
+      })
+      const lease = store.acquireLease(run.id, "instance-a", TTL)
+      const original = store.mutate(run.id, lease.fencingToken, (tx) => {
+        const created = tx.upsertWorkItem({
+          title: "Add pagination",
+          objective: "Add pagination",
+          sourceKey: "github:231",
+          contentFingerprint: "sha-1",
+        })
+        tx.transitionWorkItem(created.id, "ready", "unblocked")
+        tx.transitionWorkItem(created.id, "launching", "schedule")
+        tx.transitionWorkItem(created.id, "running", "session attached")
+        tx.transitionWorkItem(created.id, "verifying", "idle")
+        tx.transitionWorkItem(created.id, "integrating", "checks passed")
+        return tx.transitionWorkItem(created.id, "completed", "integrated")
+      })
+      const again = store.mutate(run.id, lease.fencingToken, (tx) =>
+        tx.upsertWorkItem({
+          title: "Add pagination",
+          objective: "Add pagination",
+          sourceKey: "github:231",
+          contentFingerprint: "sha-1",
+        }),
+      )
+      expect(again.id).toBe(original.id)
+      expect(again.status).toBe("completed")
+      expect(store.snapshot(run.id).workItems.filter((item) => item.sourceKey === "github:231")).toHaveLength(1)
+    })
+
     test("persists a Worker Attempt launch identity before a session exists", () => {
       const run = open().createRun({
         canonicalRoot: "/repo",

@@ -67,6 +67,7 @@ export interface WorktreeReservation {
   runId: string
   path: string
   branch: string
+  baseSha?: string
 }
 
 export interface SupervisorLeaseRecord {

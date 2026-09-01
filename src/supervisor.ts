@@ -26,12 +26,14 @@ export interface SupervisorDeps {
   capabilities?: Capability[]
   onTickError?: (error: unknown) => void
   pollIntervalMs?: number
+  catalogPath?: string
+  leaseTtlMs?: number
 }
 
 export class Supervisor {
   private readonly lifecycle: WorkerLifecycle
   private readonly verification: VerificationEngine
-  private readonly catalog = new VerificationCatalog()
+  private readonly catalog: VerificationCatalog
   private readonly registry = new WorkSourceRegistry()
   readonly instanceId: string
   private readonly capabilities: Capability[]
@@ -45,9 +47,13 @@ export class Supervisor {
   private backoffMs = 30_000
   private lastSignature = ""
   private lastTickError: string | undefined
+  private readonly leaseTtlMs: number
+  private readonly maxBackoffMs: number
 
   constructor(private readonly deps: SupervisorDeps) {
     this.instanceId = deps.instanceId ?? crypto.randomUUID()
+    this.leaseTtlMs = deps.leaseTtlMs ?? 60_000
+    this.maxBackoffMs = Math.max(1_000, this.leaseTtlMs - 15_000)
     this.capabilities =
       deps.capabilities ??
       buildCapabilitySnapshot({
@@ -59,6 +65,7 @@ export class Supervisor {
         repository: [],
       })
     this.lifecycle = new WorkerLifecycle(deps.store, deps.runner, deps.worktrees)
+    this.catalog = new VerificationCatalog(deps.catalogPath)
     this.verification = new VerificationEngine(
       deps.store,
       this.catalog,
@@ -87,6 +94,7 @@ export class Supervisor {
       const lease = this.deps.store.acquireLease(existing.id, this.instanceId, 60_000)
       this.fencingToken = lease.fencingToken
       this.applyRecoveryHold(existing)
+      this.ensureLoop()
       return `Autopilot already running\n\nObjective:\n${existing.objective}`
     }
     const run = this.deps.store.createRun({
@@ -101,15 +109,18 @@ export class Supervisor {
     this.pollMs = run.pollIntervalMs
     this.createdThisProcess = true
     this.backoffMs = this.pollMs
+    this.ensureLoop()
     return this.status()
   }
 
   pause(): string {
+    this.ensureLoop()
     this.mutate((tx) => tx.setRunStatus("paused", "pause"))
     return this.status()
   }
 
   resume(): string {
+    this.ensureLoop()
     const run = this.requireRun()
     if (run.status === "recovery-hold" || run.status === "paused") {
       this.mutate((tx) => tx.setRunStatus("enabled", "resume"))
@@ -119,6 +130,7 @@ export class Supervisor {
   }
 
   stop(force = false): string {
+    this.ensureLoop()
     this.mutate((tx) => tx.setRunStatus(force ? "force-stopping" : "stopping", "stop"))
     if (force) {
       const snapshot = this.deps.store.snapshot(this.requireRun().id)
@@ -150,6 +162,7 @@ export class Supervisor {
       clearTimeout(this.timer)
       this.timer = undefined
     }
+    this.deps.store.close()
   }
 
   ensureLoop(): void {
@@ -157,10 +170,16 @@ export class Supervisor {
       return
     }
     this.looping = true
-    void this.loopOnce()
+    this.timer = setTimeout(() => {
+      void this.loopOnce()
+    }, 0)
   }
 
   handleIdle(sessionId: string): void {
+    this.handleSessionHook(sessionId, "idle")
+  }
+
+  handleSessionHook(sessionId: string, kind: "idle" | "error" | "abort"): void {
     const run = this.deps.store.getActiveRun(this.deps.canonicalRoot)
     if (!run) {
       return
@@ -169,7 +188,7 @@ export class Supervisor {
       runId: run.id,
       fencingToken: this.fencingToken,
       sessionId,
-      kind: "idle",
+      kind,
     })
     this.backoffMs = this.pollMs
     void this.safeTick()
@@ -183,11 +202,11 @@ export class Supervisor {
     this.runId = run.id
     this.pollMs = run.pollIntervalMs
     try {
-      const lease = this.deps.store.renewLease(run.id, this.instanceId, this.fencingToken, 60_000)
+      const lease = this.deps.store.renewLease(run.id, this.instanceId, this.fencingToken, this.leaseTtlMs)
       this.fencingToken = lease.fencingToken
     } catch (error) {
-      if (error instanceof StaleLeaseError && this.fencingToken === 0) {
-        const lease = this.deps.store.acquireLease(run.id, this.instanceId, 60_000)
+      if (error instanceof StaleLeaseError) {
+        const lease = this.deps.store.acquireLease(run.id, this.instanceId, this.leaseTtlMs)
         this.fencingToken = lease.fencingToken
       } else {
         throw error
@@ -229,14 +248,22 @@ export class Supervisor {
       })),
     })
     const next = this.deps.store.snapshot(run.id)
+    const integrationPath = `.autopilot/runs/${run.id}`
+    const integrationBranch = `autopilot/${run.id}`
+    if (this.deps.gitAvailable !== false) {
+      await this.deps.worktrees.ensure(integrationPath, integrationBranch)
+    }
     for (const item of next.workItems.filter((entry) => entry.status === "verifying")) {
+      const tree = next.worktrees.find((entry) => entry.workItemId === item.id)
+      const worktree = tree?.path ?? `.autopilot/worktrees/${item.id}`
+      const baseRevision = tree?.baseSha ?? this.deps.git.head(worktree)
       await this.verification.verifyAndIntegrate({
         runId: run.id,
         fencingToken: this.fencingToken,
         workItemId: item.id,
-        worktree: `.autopilot/worktrees/${item.id}`,
-        integrationCwd: ".autopilot/integration",
-        baseRevision: "HEAD",
+        worktree,
+        integrationCwd: integrationPath,
+        baseRevision,
       })
     }
     await this.lifecycle.fillSlots({
@@ -334,15 +361,25 @@ export class Supervisor {
       this.looping = false
       return
     }
-    const before = this.signature()
-    await this.safeTick()
-    const after = this.signature()
-    if (after === before && after === this.lastSignature) {
-      this.backoffMs = Math.min(Math.max(this.backoffMs, 30_000) * 2, 5 * 60_000)
-    } else {
-      this.backoffMs = this.pollMs
+    try {
+      const before = this.signature()
+      await this.safeTick()
+      const after = this.signature()
+      if (after === before && after === this.lastSignature) {
+        this.backoffMs = Math.min(Math.max(this.backoffMs, this.pollMs) * 2, this.maxBackoffMs)
+      } else {
+        this.backoffMs = this.pollMs
+      }
+      this.lastSignature = after
+      if (this.disposed) {
+        this.looping = false
+        return
+      }
+      this.holdLease()
+    } catch (error) {
+      this.lastTickError = error instanceof Error ? error.message : String(error)
+      this.deps.onTickError?.(error)
     }
-    this.lastSignature = after
     if (this.disposed) {
       this.looping = false
       return
@@ -350,6 +387,26 @@ export class Supervisor {
     this.timer = setTimeout(() => {
       void this.loopOnce()
     }, this.backoffMs)
+  }
+
+  private holdLease(): void {
+    const active = this.deps.store.getActiveRun(this.deps.canonicalRoot)
+    if (!active) {
+      return
+    }
+    try {
+      const lease = this.deps.store.renewLease(active.id, this.instanceId, this.fencingToken, this.leaseTtlMs)
+      this.fencingToken = lease.fencingToken
+    } catch (error) {
+      if (error instanceof StaleLeaseError) {
+        try {
+          const lease = this.deps.store.acquireLease(active.id, this.instanceId, this.leaseTtlMs)
+          this.fencingToken = lease.fencingToken
+        } catch (acquireError) {
+          this.lastTickError = acquireError instanceof Error ? acquireError.message : String(acquireError)
+        }
+      }
+    }
   }
 
   private signature(): string {
@@ -393,11 +450,9 @@ export function parseAutopilotInput(input: string): {
   if (trimmed === "resume") {
     return { action: "resume" }
   }
-  if (trimmed === "stop") {
-    return { action: "stop" }
-  }
-  if (trimmed.startsWith("stop --force")) {
-    return { action: "stop", force: true }
+  const parts = trimmed.split(/\s+/)
+  if (parts[0] === "stop") {
+    return { action: "stop", ...(parts.includes("--force") ? { force: true } : {}) }
   }
   return { action: "start", objective: trimmed }
 }

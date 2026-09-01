@@ -147,6 +147,43 @@ describe("plan reconciliation", () => {
     expect(item?.failedAttempts).toBe(2)
   })
 
+  test("does not reopen a completed Work Item when the fingerprint is unchanged", () => {
+    const { store, run, lease } = openRun()
+    store.mutate(run.id, lease.fencingToken, (tx) => {
+      const item = tx.upsertWorkItem({
+        title: "Fix authentication tests",
+        objective: "original",
+        sourceKey: "check:auth",
+        contentFingerprint: "fp-1",
+      })
+      tx.transitionWorkItem(item.id, "ready", "unblocked")
+      tx.transitionWorkItem(item.id, "launching", "schedule")
+      tx.transitionWorkItem(item.id, "running", "session attached")
+      tx.transitionWorkItem(item.id, "verifying", "idle")
+      tx.transitionWorkItem(item.id, "integrating", "checks passed")
+      tx.transitionWorkItem(item.id, "completed", "integrated")
+    })
+    const applied = applyPlan({
+      store,
+      runId: run.id,
+      fencingToken: lease.fencingToken,
+      proposal: {
+        operation: "propose-plan",
+        items: [
+          {
+            sourceKey: "check:auth",
+            title: "Fix authentication tests",
+            objective: "original",
+            dependencies: [],
+            contentFingerprint: "fp-1",
+          },
+        ],
+      },
+    })
+    expect(applied[0]?.status).toBe("completed")
+    expect(store.snapshot(run.id).workItems).toHaveLength(1)
+  })
+
   test("records a blocked diagnostic Work Item after invalid semantic output is retried", async () => {
     const { store, run, lease } = openRun()
     let calls = 0

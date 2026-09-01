@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
+
 import type { AutopilotStore } from "../core/store.js"
 import type { WorkItemRecord } from "../core/types.js"
 import type { SemanticEngine } from "../planning/types.js"
@@ -15,6 +18,10 @@ export class VerificationCatalog {
   private readonly plans = new Map<string, VerificationPlan>()
   private readonly baseline = new Map<string, number>()
 
+  constructor(private readonly persistPath?: string) {
+    this.load()
+  }
+
   freezePlan(plan: VerificationPlan): VerificationPlan {
     const frozen: VerificationPlan = {
       workItemId: plan.workItemId,
@@ -22,6 +29,7 @@ export class VerificationCatalog {
       checks: plan.checks.map((check) => ({ ...check, args: [...check.args] })),
     }
     this.plans.set(plan.workItemId, frozen)
+    this.save()
     return frozen
   }
 
@@ -43,6 +51,42 @@ export class VerificationCatalog {
 
   setBaseline(checkId: string, code: number): void {
     this.baseline.set(checkId, code)
+    this.save()
+  }
+
+  private load(): void {
+    if (!this.persistPath || !existsSync(this.persistPath)) {
+      return
+    }
+    try {
+      const raw = JSON.parse(readFileSync(this.persistPath, "utf8")) as {
+        plans?: VerificationPlan[]
+        baseline?: Array<[string, number]>
+      }
+      for (const plan of raw.plans ?? []) {
+        this.plans.set(plan.workItemId, plan)
+      }
+      for (const [id, code] of raw.baseline ?? []) {
+        this.baseline.set(id, code)
+      }
+    } catch {
+      // catalog is a cache; a corrupt file must not block the Supervisor
+    }
+  }
+
+  private save(): void {
+    if (!this.persistPath) {
+      return
+    }
+    mkdirSync(dirname(this.persistPath), { recursive: true, mode: 0o700 })
+    writeFileSync(
+      this.persistPath,
+      JSON.stringify({
+        plans: [...this.plans.values()],
+        baseline: [...this.baseline.entries()],
+      }),
+      { encoding: "utf8", mode: 0o600 },
+    )
   }
 
   baselineCode(checkId: string): number | undefined {
@@ -61,6 +105,14 @@ export function createDefaultPlan(workItem: WorkItemRecord): VerificationPlan {
         args: ["test"],
         timeoutMs: 120_000,
         cwd: "worktree",
+        expectedExitCode: 0,
+      },
+      {
+        id: "tests-integration",
+        command: "bun",
+        args: ["test"],
+        timeoutMs: 120_000,
+        cwd: "integration",
         expectedExitCode: 0,
       },
     ],
