@@ -20,6 +20,7 @@ An empty work queue means idle rediscovery with bounded backoff, never implicit 
 - [Define discovery, planning, and Capability contracts](issues/04-define-discovery-planning-and-capability-contracts.md): selected Work Sources emit immutable evidence, a schema-constrained Semantic Engine proposes plans and instructions, and deterministic code validates every transition against reproducible Capability snapshots.
 - [Decide Worker isolation, integration, and concurrency](issues/05-decide-worker-isolation-integration-and-concurrency.md): reusable Work Item worktrees and fresh Worker Attempts run concurrently, while verified commits enter a dedicated Run Branch through one serialized Integration Lane.
 - [Define verification, repair, and completion state machine](issues/06-define-verification-repair-and-completion-state-machine.md): immutable Verification Plans and persisted evidence control completion, with baseline-aware checks, constrained execution, bounded repair, stuck isolation, and healthy idle rediscovery.
+- [Establish repository, package, and test foundation](issues/07-establish-repository-package-and-test-foundation.md): initialized Git and a pinned Bun/TypeScript OpenCode plugin package with strict test, typecheck, lint, and build gates.
 
 ## Not yet specified
 
