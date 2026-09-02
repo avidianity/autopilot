@@ -18,18 +18,21 @@ This repository is the plugin package `@avidian/opencode-autopilot`.
 }
 ```
 
-Or after GitHub Packages publish:
+After `npm publish`:
 
-```text
-# ~/.npmrc or project .npmrc
-@avidian:registry=https://npm.pkg.github.com
+```bash
+opencode plugin @avidian/opencode-autopilot
 ```
+
+Or in config:
 
 ```json
 {
   "plugin": ["@avidian/opencode-autopilot"]
 }
 ```
+
+The package exports `./server` (and `main`) so `opencode plugin` can find the server plugin entry.
 
 3. Quit and restart OpenCode. Config and plugins load once at startup.
 
