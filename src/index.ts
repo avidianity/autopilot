@@ -93,6 +93,7 @@ export function supervisorFor(root: string, client: OpenCodeSessionClient): Supe
     canonicalRoot: root,
     gitAvailable: git.available(),
     catalogPath: `${root}/.opencode/autopilot/verification.json`,
+    spawnMode: "orchestrator",
     sources: [
       new GitHubIssueSource(discovery, root),
       new RepositoryCheckSource(discovery, root),
@@ -111,7 +112,22 @@ export const AutopilotPlugin = (async ({ client, directory }) => {
       const commands = (cfg as { command?: Record<string, { template: string; description?: string }> }).command ?? {}
       commands.autopilot = {
         description: "Run persistent Autopilot against an objective, or status/pause/resume/stop.",
-        template: "Use the autopilot tool with input: $ARGUMENTS",
+        template: `You are the Autopilot orchestrator in this chat. Stay in this session. Do not go idle until the user says stop.
+
+1. Call the autopilot tool with input: $ARGUMENTS
+2. Read the tool output. For every item under "Spawn with the task tool", call the task tool (your installed dynamic-task plugin) with:
+   - description: the Work Item title
+   - prompt: the provided Worker prompt (includes the global objective)
+   - subagent_type: general
+   - background: true
+   - model/effort: only if the user named them in the objective
+3. Those task calls must be children of this chat so they appear in the UI Subagents list.
+4. When a task notifies you it finished, call autopilot with input: status and spawn the next ready items.
+5. Repeat until status shows no ready/running/repairing work, or the user says stop.
+6. To inspect progress, call autopilot with input: status. Never use input: start if a run is already enabled.
+
+User arguments:
+$ARGUMENTS`,
       }
       ;(cfg as { command?: Record<string, { template: string; description?: string }> }).command = commands
     },
@@ -154,18 +170,23 @@ export const AutopilotPlugin = (async ({ client, directory }) => {
           const parsed = parseAutopilotInput(args.input)
           const supervisor = supervisorFor(directory, client as unknown as OpenCodeSessionClient)
           if (parsed.action === "status") {
-            return supervisor.status()
+            await supervisor.tick()
+            return supervisor.spawnBoard()
           }
           if (parsed.action === "pause") {
             return supervisor.pause()
           }
           if (parsed.action === "resume") {
-            return supervisor.resume()
+            supervisor.resume()
+            await supervisor.tick()
+            return supervisor.spawnBoard()
           }
           if (parsed.action === "stop") {
             return supervisor.stop(parsed.force === true)
           }
-          return supervisor.start(parsed.objective ?? args.input)
+          supervisor.start(parsed.objective ?? args.input)
+          await supervisor.tick()
+          return supervisor.spawnBoard()
         },
       }),
     },

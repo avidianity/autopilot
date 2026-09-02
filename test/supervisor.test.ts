@@ -257,6 +257,7 @@ describe("Supervisor control", () => {
   })
 
   test("parses control input", () => {
+    expect(parseAutopilotInput("start").action).toBe("status")
     expect(parseAutopilotInput("status").action).toBe("status")
     expect(parseAutopilotInput("pause").action).toBe("pause")
     expect(parseAutopilotInput("resume").action).toBe("resume")
@@ -265,6 +266,28 @@ describe("Supervisor control", () => {
     expect(parseAutopilotInput("stop now --force").force).toBe(true)
     expect(parseAutopilotInput("stop now --force").action).toBe("stop")
     expect(parseAutopilotInput("Implement all issues").objective).toBe("Implement all issues")
+  })
+
+  test("orchestrator spawnBoard tells this chat to use the task tool", async () => {
+    const runner = new FakeSessionRunner()
+    const supervisor = new Supervisor({
+      store: AutopilotStore.memory(),
+      engine: engineForEvidence(),
+      runner,
+      worktrees: new InMemoryWorktreePort(),
+      process: new FakeProcessPort(),
+      git: new FakeGitPort(),
+      canonicalRoot: "/repo",
+      gitAvailable: false,
+      spawnMode: "orchestrator",
+    })
+    supervisor.start("Fix the failing authentication tests.")
+    await supervisor.tick()
+    expect(runner.createCalls).toBe(0)
+    const board = await supervisor.spawnBoard()
+    expect(board).toContain("Spawn with the task tool")
+    expect(board).toContain("task subagent_type: general")
+    expect(board).toContain("AUTOPILOT GLOBAL OBJECTIVE")
   })
 })
 

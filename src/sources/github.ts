@@ -30,6 +30,12 @@ export class GitHubIssueSource implements WorkSourceAdapter {
     if (!Array.isArray(issues)) {
       return []
     }
+    const hinted = Number(input.hints.minIssue ?? "")
+    const matched = /#(\d+)/.exec(input.objective)
+    const minIssue = Number.isFinite(hinted) && hinted > 0 ? hinted : matched ? Number(matched[1]) : 0
+    if (minIssue > 0) {
+      issues = issues.filter((issue) => issue.number >= minIssue)
+    }
     return issues.map((issue) => ({
       sourceId: this.id,
       sourceKey: `github:${issue.number}`,

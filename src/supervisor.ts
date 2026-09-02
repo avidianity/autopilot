@@ -28,6 +28,7 @@ export interface SupervisorDeps {
   pollIntervalMs?: number
   catalogPath?: string
   leaseTtlMs?: number
+  spawnMode?: "orchestrator" | "session"
 }
 
 export class Supervisor {
@@ -52,10 +53,12 @@ export class Supervisor {
   private lastTickError: string | undefined
   private readonly leaseTtlMs: number
   private readonly maxBackoffMs: number
+  private readonly spawnMode: "orchestrator" | "session"
 
   constructor(private readonly deps: SupervisorDeps) {
     this.instanceId = deps.instanceId ?? crypto.randomUUID()
     this.leaseTtlMs = deps.leaseTtlMs ?? 300_000
+    this.spawnMode = deps.spawnMode ?? "session"
     this.maxBackoffMs = Math.max(1_000, this.leaseTtlMs - 15_000)
     this.capabilities =
       deps.capabilities ??
@@ -355,21 +358,59 @@ export class Supervisor {
         this.catalog.freezePlan(createDefaultPlan(item))
       }
     }
-    await this.lifecycle.fillSlots({
-      runId: run.id,
-      fencingToken: this.fencingToken,
-      canonicalRoot: this.deps.canonicalRoot,
-      startPoint: integrationPath,
-      ...(this.deps.gitAvailable === undefined ? {} : { gitAvailable: this.deps.gitAvailable }),
-      instructionFor: async (item) => {
-        return compileWorkerInstruction({
-          engine: this.deps.engine,
-          objective: current.objective,
-          workItem: { id: item.id, title: item.title, objective: item.objective },
-          capabilities: this.capabilities,
-        })
-      },
-    })
+    if (this.spawnMode === "session") {
+      await this.lifecycle.fillSlots({
+        runId: run.id,
+        fencingToken: this.fencingToken,
+        canonicalRoot: this.deps.canonicalRoot,
+        startPoint: integrationPath,
+        ...(this.deps.gitAvailable === undefined ? {} : { gitAvailable: this.deps.gitAvailable }),
+        instructionFor: async (item) => {
+          return compileWorkerInstruction({
+            engine: this.deps.engine,
+            objective: current.objective,
+            workItem: { id: item.id, title: item.title, objective: item.objective },
+            capabilities: this.capabilities,
+          })
+        },
+      })
+    }
+  }
+
+  async spawnBoard(): Promise<string> {
+    const run = this.deps.store.getActiveRun(this.deps.canonicalRoot)
+    if (!run || run.status !== "enabled") {
+      return this.status()
+    }
+    const snapshot = this.deps.store.snapshot(run.id)
+    const slots = Math.max(0, run.concurrency - snapshot.workItems.filter((item) => item.status === "running" || item.status === "launching").length)
+    const ready = snapshot.workItems.filter((item) => item.status === "ready" || item.status === "repairing").slice(0, Math.max(slots, 0))
+    if (ready.length === 0) {
+      return this.status()
+    }
+    const blocks: string[] = [
+      this.status(),
+      "",
+      "Spawn with the task tool (this chat is the orchestrator):",
+    ]
+    for (const item of ready) {
+      const instruction = await compileWorkerInstruction({
+        engine: this.deps.engine,
+        objective: run.objective,
+        workItem: { id: item.id, title: item.title, objective: item.objective },
+        capabilities: this.capabilities,
+      })
+      blocks.push(
+        "",
+        `### ${item.title}`,
+        `task description: ${item.title}`,
+        "task subagent_type: general",
+        "task background: true",
+        "task prompt:",
+        instruction.prompt ?? instruction.command ?? item.objective,
+      )
+    }
+    return blocks.join("\n")
   }
 
   pollIntervalMs(): number {
@@ -540,7 +581,7 @@ export function parseAutopilotInput(input: string): {
   objective?: string
 } {
   const trimmed = input.trim()
-  if (trimmed === "" || trimmed === "status") {
+  if (trimmed === "" || trimmed === "status" || trimmed.toLowerCase() === "start") {
     return { action: "status" }
   }
   if (trimmed === "pause") {
