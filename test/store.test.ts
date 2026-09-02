@@ -417,6 +417,33 @@ function withStore(
       expect(store.findAttemptByLaunchToken("launch-missing")?.status).toBe("unknown")
     })
 
+    test("reconcile missing session does not un-complete a completed Work Item", () => {
+      const run = open().createRun({
+        canonicalRoot: "/repo",
+        objective: "goal",
+      })
+      const lease = store.acquireLease(run.id, "instance-a", TTL)
+      store.mutate(run.id, lease.fencingToken, (tx) => {
+        const created = tx.upsertWorkItem({
+          title: "Add pagination",
+          objective: "Add pagination",
+        })
+        tx.transitionWorkItem(created.id, "ready", "unblocked")
+        tx.transitionWorkItem(created.id, "launching", "schedule")
+        tx.beginWorkerAttempt({
+          workItemId: created.id,
+          launchToken: "launch-stale",
+        })
+        tx.transitionWorkItem(created.id, "running", "session attached")
+        tx.transitionWorkItem(created.id, "verifying", "idle")
+        tx.transitionWorkItem(created.id, "integrating", "checks passed")
+        tx.transitionWorkItem(created.id, "completed", "integrated")
+      })
+      expect(() => store.reconcileObservedAttempts(run.id, lease.fencingToken, [])).not.toThrow()
+      expect(store.getWorkItem(store.snapshot(run.id).workItems[0]?.id ?? "")?.status).toBe("completed")
+      expect(store.findAttemptByLaunchToken("launch-stale")?.status).toBe("unknown")
+    })
+
     if (name !== "sqlite memory AutopilotStore") {
       test("recovers persisted state after reopen", () => {
         const run = open().createRun({

@@ -103,9 +103,12 @@ export class FakeGitPort implements GitPort {
     this.headSha = commits[commits.length - 1] ?? this.headSha
   }
 
+  lastRevertToSha: string | undefined
+
   revertCherryPick(cwd: string, toSha?: string): void {
     void cwd
     this.reverted = true
+    this.lastRevertToSha = toSha
     if (toSha) {
       this.headSha = toSha
       this.applied = []

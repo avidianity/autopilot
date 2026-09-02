@@ -209,7 +209,7 @@ export class VerificationEngine {
         reason: "integration conflict",
         suggestedRepair: "Rebase onto the current Run Branch and resolve conflicts.",
       }
-      this.git.revertCherryPick(input.integrationCwd)
+      this.git.revertCherryPick(input.integrationCwd, beforeSha)
       this.fail(input.runId, input.fencingToken, item, result, "integrating")
       return result
     }

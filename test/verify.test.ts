@@ -221,6 +221,7 @@ describe("verification and integration", () => {
     })
     expect(result.success).toBe(false)
     expect(git.reverted).toBe(true)
+    expect(git.lastRevertToSha).toBe("base-sha")
     expect(git.applied).toEqual([])
     expect(git.headSha).toBe("base-sha")
     expect(store.getWorkItem(item.id)?.status).not.toBe("completed")
@@ -246,6 +247,7 @@ describe("verification and integration", () => {
     })
     expect(result.reason).toBe("integration conflict")
     expect(git.reverted).toBe(true)
+    expect(git.lastRevertToSha).toBe("base-sha")
     expect(store.getWorkItem(item.id)?.status).toBe("repairing")
   })
 

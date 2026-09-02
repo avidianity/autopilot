@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import { AutopilotStore } from "../src/core/store.js"
 import { InMemoryWorktreePort, WorkerLifecycle } from "../src/workers/lifecycle.js"
-import { FakeSessionRunner } from "../src/workers/session-runner.js"
+import { FakeSessionRunner, OpenCodeSessionRunner } from "../src/workers/session-runner.js"
 
 const TTL = 60_000
 
@@ -428,5 +428,29 @@ describe("Worker lifecycle", () => {
     const status = store.getWorkItem(item.id)?.status
     expect(status).not.toBe("launching")
     expect(status === "repairing" || status === "stuck").toBe(true)
+  })
+})
+
+describe("OpenCodeSessionRunner", () => {
+  test("list passes the same directory query as create", async () => {
+    const queries: Array<{ directory?: string } | undefined> = []
+    const client = {
+      session: {
+        create: async (options?: { query?: { directory?: string } }) => {
+          queries.push(options?.query)
+          return { data: { id: "ses_1", title: "t" } }
+        },
+        promptAsync: async () => undefined,
+        abort: async () => undefined,
+        list: async (options?: { query?: { directory?: string } }) => {
+          queries.push(options?.query)
+          return { data: [] }
+        },
+      },
+    }
+    const runner = new OpenCodeSessionRunner(client)
+    await runner.create({ title: "t", workingDirectory: "/work" })
+    await runner.list()
+    expect(queries).toEqual([{ directory: "/work" }, { directory: "/work" }])
   })
 })

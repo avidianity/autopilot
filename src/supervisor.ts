@@ -251,17 +251,16 @@ export class Supervisor {
       await this.tickInFlight
       return
     }
-    const running = this.performTick()
-    this.tickInFlight = running
-    try {
-      await running
-    } finally {
-      this.tickInFlight = undefined
-      if (this.tickQueued) {
-        this.tickQueued = false
-        await this.tick()
+    do {
+      this.tickQueued = false
+      const running = this.performTick()
+      this.tickInFlight = running
+      try {
+        await running
+      } finally {
+        this.tickInFlight = undefined
       }
-    }
+    } while (this.tickQueued)
   }
 
   private async performTick(): Promise<void> {
@@ -348,6 +347,14 @@ export class Supervisor {
       fencingToken: this.fencingToken,
     })
     this.refreshLease(run.id)
+    for (const item of this.deps.store.snapshot(run.id).workItems) {
+      if (
+        (item.status === "ready" || item.status === "repairing") &&
+        !this.catalog.get(item.id)
+      ) {
+        this.catalog.freezePlan(createDefaultPlan(item))
+      }
+    }
     await this.lifecycle.fillSlots({
       runId: run.id,
       fencingToken: this.fencingToken,
@@ -355,9 +362,6 @@ export class Supervisor {
       startPoint: integrationPath,
       ...(this.deps.gitAvailable === undefined ? {} : { gitAvailable: this.deps.gitAvailable }),
       instructionFor: async (item) => {
-        if (!this.catalog.get(item.id)) {
-          this.catalog.freezePlan(createDefaultPlan(item))
-        }
         return compileWorkerInstruction({
           engine: this.deps.engine,
           objective: current.objective,

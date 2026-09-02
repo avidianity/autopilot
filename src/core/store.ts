@@ -453,7 +453,7 @@ function createMutation(
     recordUnknown(workItemId, attemptId, reason) {
       const item = requireWorkItem(state, runId, workItemId)
       const attempt = state.attempts.get(attemptId)
-      if (attempt && attempt.runId === runId) {
+      if (attempt && attempt.runId === runId && attempt.status !== "unknown") {
         const fromStatus = attempt.status
         attempt.status = "unknown"
         attempt.updatedAt = clock()
@@ -467,6 +467,15 @@ function createMutation(
           fencingToken,
           createdAt: attempt.updatedAt,
         })
+      }
+      if (
+        item.status === "completed" ||
+        item.status === "cancelled" ||
+        item.status === "superseded" ||
+        item.status === "stuck" ||
+        item.status === "unknown"
+      ) {
+        return
       }
       assertWorkItemTransition(item.status, "unknown")
       const fromStatus = item.status

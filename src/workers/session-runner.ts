@@ -7,7 +7,7 @@ export interface SessionRunner {
   create(input: { title: string; workingDirectory?: string }): Promise<RunnerSession>
   prompt(sessionId: string, instruction: { command?: string; prompt?: string }): Promise<void>
   abort(sessionId: string): Promise<void>
-  list(): Promise<RunnerSession[]>
+  list(directory?: string): Promise<RunnerSession[]>
 }
 
 export interface OpenCodeSessionClient {
@@ -39,9 +39,14 @@ function sessionFrom(
 }
 
 export class OpenCodeSessionRunner implements SessionRunner {
+  private lastWorkingDirectory: string | undefined
+
   constructor(private readonly client: OpenCodeSessionClient) {}
 
   async create(input: { title: string; workingDirectory?: string }): Promise<RunnerSession> {
+    if (input.workingDirectory) {
+      this.lastWorkingDirectory = input.workingDirectory
+    }
     const created = await this.client.session.create({
       body: { title: input.title },
       ...(input.workingDirectory ? { query: { directory: input.workingDirectory } } : {}),
@@ -68,8 +73,9 @@ export class OpenCodeSessionRunner implements SessionRunner {
     await this.client.session.abort({ path: { id: sessionId } })
   }
 
-  async list(): Promise<RunnerSession[]> {
-    const listed = await this.client.session.list()
+  async list(directory?: string): Promise<RunnerSession[]> {
+    const dir = directory ?? this.lastWorkingDirectory
+    const listed = await this.client.session.list(dir ? { query: { directory: dir } } : undefined)
     const rows = listed.data ?? []
     return rows.map((session) => ({ id: session.id, title: session.title ?? "" }))
   }
@@ -102,7 +108,8 @@ export class FakeSessionRunner implements SessionRunner {
     this.aborted.push(sessionId)
   }
 
-  async list(): Promise<RunnerSession[]> {
+  async list(_directory?: string): Promise<RunnerSession[]> {
+    void _directory
     return [...this.created]
   }
 }
