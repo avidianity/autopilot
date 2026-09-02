@@ -1,6 +1,6 @@
 {
   "name": "@avidian/opencode-autopilot",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Persistent autonomous multi-agent supervision for OpenCode",
   "type": "module",
   "license": "MIT",
@@ -19,11 +19,7 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./server": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    }
+    "./server": "./dist/index.js"
   },
   "files": [
     "dist"
