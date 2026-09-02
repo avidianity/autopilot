@@ -1,9 +1,16 @@
 {
-  "name": "opencode-autopilot",
+  "name": "@avidianity/opencode-autopilot",
   "version": "0.1.0",
   "description": "Persistent autonomous multi-agent supervision for OpenCode",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avidianity/autopilot.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

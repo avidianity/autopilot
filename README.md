@@ -6,7 +6,7 @@ Workers may stop. The Supervisor does not, until `/autopilot stop`.
 
 ## Install
 
-This repository is the plugin package `opencode-autopilot`.
+This repository is the plugin package `@avidianity/opencode-autopilot`.
 
 1. Pin `@opencode-ai/plugin` to the version your OpenCode config resolves (currently `1.18.21`).
 2. Add the plugin to project or global OpenCode config:
@@ -18,11 +18,16 @@ This repository is the plugin package `opencode-autopilot`.
 }
 ```
 
-Or after publish/link:
+Or after GitHub Packages publish:
+
+```text
+# ~/.npmrc or project .npmrc
+@avidianity:registry=https://npm.pkg.github.com
+```
 
 ```json
 {
-  "plugin": ["opencode-autopilot"]
+  "plugin": ["@avidianity/opencode-autopilot"]
 }
 ```
 
