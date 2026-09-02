@@ -1,5 +1,5 @@
 {
-  "name": "@avidianity/opencode-autopilot",
+  "name": "@avidian/opencode-autopilot",
   "version": "0.1.0",
   "description": "Persistent autonomous multi-agent supervision for OpenCode",
   "type": "module",
